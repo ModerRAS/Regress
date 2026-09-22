@@ -4,9 +4,9 @@ The bundled default pack lives here, and this directory is the format's home in 
 The v1 format is specified in [`docs/texture-packs.md`](../docs/texture-packs.md).
 
 - `default/pack.json` — the manifest the game loads with no configuration.
-- `default/tiles/` — the PNGs the manifest names. **Not committed yet.** Until the art
-  workstream lands them, each tile warns once and the loader's procedural fallback supplies the
-  same colours, so the game renders identically-looking flat tiles.
+- `default/tiles/` — the twelve PNGs the manifest names, all committed. The default pack loads
+  12/12; regenerate them with `python tools/gen_default_pack.py` (Python 3 stdlib only,
+  deterministic bytes). Tiles are imported lossless (`compress/mode=0`).
 
 ## Pack author quick start
 
