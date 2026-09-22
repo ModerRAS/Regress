@@ -18,7 +18,7 @@ Terrain spans negative Y, with a bedrock floor and a heightmap surface.
 ```bash
 dotnet build                                   # build the C# assembly
 godot-mono --path .                            # play
-godot-mono --headless --path . -- --selftest   # 48 headless assertions
+godot-mono --headless --path . -- --selftest   # 69 headless assertions
 godot-mono --path . -- --demo                  # scripted walk + build + mine-down test
 godot-mono --path . -- --bench                 # performance run with per-system breakdown
 godot-mono --path . -- --shot=out.png          # render one frame to a PNG and quit
@@ -47,6 +47,8 @@ godot-mono --path . -- --shot=out.png          # render one frame to a PNG and q
 scenes/Main.tscn         entry scene (one Node3D with Game.cs)
 src/ChunkComponents.cs   ECS components and tags for a chunk
 src/ChunkMesher.cs       16^3 voxels -> ArrayMesh (one quad per air-facing face)
+src/TexPack.cs           texture packs: pack.json, four-rung discovery, tile array
+src/voxel_tiles.gdshader spatial shader: tile array + vertex tint, alpha cutout
 src/Blocks.cs            block palette, per-face colours, break times
 src/EditRequests.cs      edit requests + block behaviours (what a break actually removes)
 src/TerrainGenerator.cs  noise heightmap, per-column surface range, trees (one per world)
@@ -57,7 +59,7 @@ src/Game.cs              bootstrap, HUD, sky/fog, test-mode entry points
 src/SelfTest.cs          headless assertions
 src/Bench.cs             performance run
 src/Prof.cs              per-system frame accumulators used by --bench
-docs/                    architecture, performance, roadmap
+docs/                    architecture, performance, roadmap, texture-packs
 ```
 
 ## Design in one screen
@@ -108,7 +110,7 @@ per chunk), bounded by time budgets rather than chunk counts. Details and number
 
 | flag | what it does |
 | --- | --- |
-| `--selftest` | 48 headless assertions: terrain, mesher cross-checked against brute force, triangle winding, vertical-world invariants, break/place request pipeline, tree felling, per-world terrain |
+| `--selftest` | 69 headless assertions: terrain, mesher cross-checked against brute force, triangle winding, vertical-world invariants, break/place request pipeline, tree felling, per-world terrain |
 | `--demo` | drives the player without a keyboard: walk, place, then mine straight down 63 blocks to bedrock, asserting they stay on solid ground |
 | `--bench` | five-phase performance run; `--frozen` measures the engine floor, `--view=` / `--collision=` / `--budget=` sweep |
 | `--shot=path.png` | render N frames, save a PNG, quit |

@@ -182,5 +182,6 @@ Gameplay never mutates the world; it proposes an edit and the world decides.
    entity creation; the view should only supply node handles.
 3. **Systems are static methods taking the store as a parameter**, so there is no per-system
    state or configuration.
-4. **The mesher allocates ~313 KB per chunk** (lists plus `ToArray()` marshalling). The
-   millisecond budget absorbs it; a two-pass count-then-fill mesher would remove the garbage.
+4. **The mesher allocates ~430 KB per chunk** (lists plus `ToArray()` marshalling, now with the
+   per-vertex UV and tile-index streams). The millisecond budget absorbs it; a two-pass
+   count-then-fill mesher would remove the garbage.

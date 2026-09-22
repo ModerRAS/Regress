@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://dc5vjkw6y2xil"
-path="res://.godot/imported/wood_top.png-01ec608f3c7219dd931f0511a1cd2b46.ctex"
+uid="uid://cred0td12eqa7"
+path="res://.godot/imported/preview.png-b4838d23de224c84c7c9b5588b6708a6.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://texturepacks/default/tiles/wood_top.png"
-dest_files=["res://.godot/imported/wood_top.png-01ec608f3c7219dd931f0511a1cd2b46.ctex"]
+source_file="res://preview.png"
+dest_files=["res://.godot/imported/preview.png-b4838d23de224c84c7c9b5588b6708a6.ctex"]
 
 [params]
 
@@ -37,4 +37,4 @@ process/normal_map_invert_y=false
 process/hdr_as_srgb=false
 process/hdr_clamp_exposure=false
 process/size_limit=0
-detect_3d/compress_to=0
+detect_3d/compress_to=1

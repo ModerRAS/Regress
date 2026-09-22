@@ -80,8 +80,9 @@ makes the query an unambiguous `AllTags` lookup.
 
 ## Known cost not yet addressed
 
-The mesher allocates ~313 KB per chunk (lists plus `ToArray()` marshalling), so streaming a few
-hundred chunks produces ~80 MB of garbage. The millisecond budget absorbs the time, but a
+The mesher allocates ~430 KB per chunk (lists plus `ToArray()` marshalling, now including the
+UV and tile-index vertex streams), so streaming a few hundred chunks produces ~100 MB of
+garbage. The millisecond budget absorbs the time, but a
 two-pass count-then-fill mesher would remove the garbage entirely. Not done because no phase
 currently shows GC pauses in the 1% low.
 

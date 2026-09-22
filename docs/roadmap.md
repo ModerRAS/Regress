@@ -11,9 +11,11 @@
 - **Block edits as a request pipeline** — hardness-based mining duration, tree felling via
   `BlockBehaviors`, placement legality in one place.
 - **ECS** — chunk lifecycle expressed as archetypes; see [architecture.md](architecture.md).
-- **Test harness** — `--selftest` (48 assertions), `--demo` (scripted walk / build / mine),
+- **Test harness** — `--selftest` (69 assertions), `--demo` (scripted walk / build / mine),
   `--bench` (five-phase performance run with per-system breakdown), `--shot`, `--map`,
   `--freecam`, `--frozen`, `--diag`.
+- **Texture packs v1** — `pack.json` + twelve keyed tiles, four-rung discovery ending in
+  procedural tiles, one shader for every chunk; see [texture-packs.md](texture-packs.md).
 
 ## Open work
 
@@ -78,6 +80,6 @@ Carried from [architecture.md](architecture.md#known-weaknesses):
 
 - `ChunkVisual` sits on every chunk entity, including buried chunks that never render.
 - The player entity is created by the view (`Player._Ready`) rather than by a factory.
-- The mesher allocates ~313 KB per chunk; a two-pass count-then-fill mesh would remove it.
+- The mesher allocates ~430 KB per chunk; a two-pass count-then-fill mesh would remove it.
 - No persistence: player-built chunks are pinned in memory rather than written to disk, so the
   world resets between sessions.
