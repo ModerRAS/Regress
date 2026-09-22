@@ -118,6 +118,26 @@ public static class SelfTest
         Check(world.SetBlock(deep.X, deep.Y, deep.Z, Block.Air), "digging into a buried chunk creates it");
         Check(world.TryGetChunk(deep.X, deep.Y, deep.Z, out _), "dug chunk now exists");
 
+        // ---- spawn placement ---------------------------------------------
+        var spawn = world.FindSpawn();
+        Check(world.BodyFits(spawn), $"spawn body is clear of solid blocks ({spawn})");
+        Check(!Blocks.IsSolid(world.GetBlock(Mathf.FloorToInt(spawn.X), Mathf.FloorToInt(spawn.Y),
+            Mathf.FloorToInt(spawn.Z))), "spawn feet are not inside a block");
+        Check(!Blocks.IsSolid(world.GetBlock(Mathf.FloorToInt(spawn.X), Mathf.FloorToInt(spawn.Y) + 1,
+            Mathf.FloorToInt(spawn.Z))), "spawn head room is not inside a block");
+        Check(!world.BodyFits(new Vector3(spawn.X, VoxelWorld.ChunkSize * -1 + 0.5f, spawn.Z)),
+            "the fit test rejects a position inside stone");
+        Check(!world.BodyFits(new Vector3(0.5f, world.BedrockY, 0.5f)), "the fit test rejects bedrock");
+
+        // Walled in at the origin, the search still has to return somewhere the body fits.
+        int originY = world.SurfaceY(0, 0);
+        world.SetBlock(0, originY, 0, Block.Stone);
+        world.SetBlock(0, originY + 1, 0, Block.Stone);
+        Check(!world.BodyFits(new Vector3(0.5f, originY, 0.5f)), "the blocked position is rejected");
+        Check(world.BodyFits(world.FindSpawn()), $"a walled-off origin still spawns clear ({world.FindSpawn()})");
+        world.SetBlock(0, originY, 0, Block.Air);
+        world.SetBlock(0, originY + 1, 0, Block.Air);
+
         // ---- block break parameters + the edit request pipeline -----------
         Check(Blocks.HardnessOf(Block.Bedrock) < 0f && !Blocks.IsBreakable(Block.Bedrock),
             "bedrock has no break time and is unbreakable");

@@ -498,10 +498,13 @@ public partial class VoxelWorld : Node3D
         return true;
     }
 
-    /// <summary>Spawn point: the nearest column whose 5x5 neighbourhood is level and whose
-    /// 7x7 neighbourhood has no tree, so the player starts on open ground and does not wake up
-    /// inside a trunk or facing a step.</summary>
-    public Vector3 FindSpawn(int searchRadius = 12)
+    /// <summary>
+    /// Spawn point. The only hard requirement is that the player's body is not inside solid
+    /// geometry — standing face to face with a trunk is fine. So this tests the body box
+    /// directly and moves to the next column when one does not fit, instead of guessing from
+    /// terrain shape (flatness, tree clearance) which are preferences, not correctness.
+    /// </summary>
+    public Vector3 FindSpawn(int searchRadius = 4)
     {
         for (int r = 0; r <= searchRadius; r++)
         {
@@ -510,31 +513,31 @@ public partial class VoxelWorld : Node3D
                 for (int dx = -r; dx <= r; dx++)
                 {
                     if (Mathf.Max(Mathf.Abs(dx), Mathf.Abs(dz)) != r) continue;
-                    int h = HeightAt(dx, dz);
-                    if (!IsLevel(dx, dz, h) || HasTreeNear(dx, dz)) continue;
-                    return new Vector3(dx + 0.5f, h + 1.5f, dz + 0.5f);
+                    var candidate = new Vector3(dx + 0.5f, SurfaceY(dx, dz), dz + 0.5f);
+                    if (BodyFits(candidate)) return candidate;
                 }
             }
         }
-        return new Vector3(0.5f, HeightAt(0, 0) + 1.5f, 0.5f);
+
+        // Nothing nearby fits: climb the origin column until the body does.
+        var fallback = new Vector3(0.5f, SurfaceY(0, 0), 0.5f);
+        for (int i = 0; i < 64 && !BodyFits(fallback); i++) fallback.Y += 1f;
+        return fallback;
     }
 
-    private bool IsLevel(int wx, int wz, int height)
+    /// <summary>True if the player's collision box at this feet position clears every solid
+    /// block it would occupy. Capsule is radius 0.35, height 1.8, origin at the feet.</summary>
+    public bool BodyFits(Vector3 feet)
     {
-        for (int dz = -2; dz <= 2; dz++)
-            for (int dx = -2; dx <= 2; dx++)
-                if (Terrain.HeightAt(wx + dx, wz + dz) != height) return false;
+        int x0 = Mathf.FloorToInt(feet.X - 0.35f), x1 = Mathf.FloorToInt(feet.X + 0.35f);
+        int y0 = Mathf.FloorToInt(feet.Y), y1 = Mathf.FloorToInt(feet.Y + 1.8f);
+        int z0 = Mathf.FloorToInt(feet.Z - 0.35f), z1 = Mathf.FloorToInt(feet.Z + 0.35f);
+
+        for (int y = y0; y <= y1; y++)
+            for (int z = z0; z <= z1; z++)
+                for (int x = x0; x <= x1; x++)
+                    if (Blocks.IsSolid(GetBlock(x, y, z))) return false;
         return true;
-    }
-
-    /// <summary>Clearing wider than the chunk stamping margin, so the player does not spawn
-    /// facing a trunk that is technically outside the flat area.</summary>
-    private bool HasTreeNear(int wx, int wz)
-    {
-        for (int dz = -6; dz <= 6; dz++)
-            for (int dx = -6; dx <= 6; dx++)
-                if (Terrain.TreeTrunkHeight(wx + dx, wz + dz) > 0) return true;
-        return false;
     }
 
     /// <summary>Highest y to stand on in a column: the ground, or a tree canopy, or the
