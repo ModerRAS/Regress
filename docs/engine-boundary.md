@@ -87,7 +87,7 @@ Classification:
 number actually means.
 
 Two files are misclassified by their names, not their content: `TexPack.cs` is 100% asset-import
-adapter (37 engine lines of file/JSON/Image IO, correct), and `TerrainGenerator.cs` is 3% engine
+adapter (49 engine lines: 18 file/JSON/`Variant`, 14 `Image`/`Texture2DArray`, 19 `GD.*` — correct), and `TerrainGenerator.cs` is 3% engine
 surface yet cannot compile — it is the *most* logic and one of the least buildable.
 
 ## The executable probe
@@ -118,8 +118,8 @@ time, copying them verbatim from `src/`:
 | 7 | `PlayerSystems.cs` | 70 | 21 |
 
 **Result: 0 of 7 candidate logic files compile engine-free, and the union is 70 distinct leak
-sites.** Every site is `CS0246`, first error per expression — the verbatim head of step 1, the
-smallest possible failure:
+sites** (70 distinct `file:line:col`, 60 distinct `file:line`). Every site is `CS0246`, first error
+per expression — the verbatim head of step 1, the smallest possible failure:
 
 ```
 Blocks.cs(1,7): error CS0246: The type or namespace name 'Godot' could not be found (are you missing a using directive or an assembly reference?)
@@ -140,9 +140,9 @@ Full untruncated output is in `.pi/boundary/raw-step-01..07-*.txt` and `.pi/boun
 
 **Honest caveat on the 70.** Roslyn reports the first failure per expression and stops, so once
 `Vector3I` is unresolved, `next.X - origin.X` produces nothing further. The 70 is a *lower bound*.
-A pure symbol census over the same 7 files (1366 LOC) finds **202 lines carrying engine symbols**:
-48 `Vector3`, 46 `Vector3I`, 44 `Mathf.`, 15 `Time.GetTicksUsec`, 14 `Color`, 12 `Input.*`,
-plus the node/mesh/physics/Rid stragglers.
+A pure symbol census over the same 7 files (1366 LOC) finds **202 lines carrying engine symbols**,
+containing 48 `Vector3`, 46 `Vector3I`, 44 `Mathf.`, 15 `Time.GetTicksUsec`, 14 `Color` and 12
+`Input.*` occurrences (plus the node/mesh/physics/`Rid` stragglers).
 
 The fraction, stated precisely: **0% of logic compiles engine-free today; 202 of 1366 logic LOC
 (15%) are engine-typed, and the reported error count of 70 is a floor on the number of distinct
@@ -165,8 +165,10 @@ Build succeeded.
 
 `grep -n 'Godot\|Mathf\|Vector3\|FastNoiseLite'` over those ported files returns only my own
 comments. **331 LOC of the rules core — the block table, the break/fell pipeline, the whole terrain
-function, the chunk data — build with no engine, after ~28 mechanical edits and one deletion.**
-The edits are itemised in the seam section below.
+function, the chunk data — build with no engine, after ~30 mechanical edits and one deletion.**
+The edits are itemised in the seam section below. Independently corroborated: the probe worker's
+projection from the error classes alone was 311 of 1366 logic LOC (22.8%) freed by exactly these
+replacements — within 20 LOC of what was actually built.
 
 ## Leak taxonomy
 
@@ -180,7 +182,7 @@ Counted over the 7 mixed files. "sites" = lines; "occurrences" = symbol instance
 | **engine time / OS** | 16 | `Time.GetTicksUsec` ×15, `OS.GetCmdlineUserArgs` | **incidental.** Every one is a millisecond-budget read. A 1-method `IClock` removes all 16 |
 | **input** | 10 | `Input.IsKeyPressed` ×8, `Input.MouseMode`, `Input.IsMouseButtonPressed` | **essential, but misplaced.** Reading input is an adapter's job; here it sits inside `PlayerSystems.PollInput`, so the game's intent layer can only be exercised through the engine's static singleton. All 10 sites are in that one 20-line system |
 | **engine noise** | 2 | `FastNoiseLite` field + construction | **incidental.** A `INoise2D { float Sample(float,float); }` is a one-line adapter over Godot's noise, and it is the *only* thing keeping the terrain function unbuildable |
-| **engine file / JSON IO** | 3 | `Godot.Collections.Array`, `.Dictionary` | **incidental** in the mesher (marshalling), **essential** in `TexPack.cs` (37 lines of `FileAccess`/`Image`/`ResourceLoader` — correctly an adapter) |
+| **engine file / JSON IO** | 3 | `Godot.Collections.Array`, `.Dictionary` | **incidental** in the mesher (marshalling), **essential** in `TexPack.cs` (49 engine lines — correctly an adapter) |
 | **engine logging** | 0 | — | not a leak in logic. All 43 `GD.Print`/`GD.PushWarning` sites are in the adapters (`TexPack` 19, `Game` 12, `Bench` 9, `SelfTest` 3), which is where they belong |
 | **threading** | 0 | `[System.ThreadStatic]` scratch buffers (`EditRequests.cs:46-47`), `GC.GetAllocatedBytesForCurrentThread()` | already BCL, not engine. No Godot threading anywhere |
 
@@ -195,7 +197,7 @@ the seam is not where the work is.** Say it precisely:
 
 - The **call-direction** seam is genuinely one method. `BlockBehaviors.Collect` and
   `ChunkMesher.Build` each ask the world for exactly one thing — `GetBlock(x, y, z)` — and
-  `VoxelWorld` already exposes *exactly* that signature at `src/VoxelWorld.cs:462`. Adding
+  `VoxelWorld` already exposes *exactly* that signature at `src/VoxelWorld.cs:461`. Adding
   `IBlockReader` to the class declaration is the entire cost on the world side.
 - The **type-vocabulary** seam is the real work: 46 `Vector3I` + 44 `Mathf` + 14 `Color`
   occurrences must become plain types. That is mechanical but it is not "an interface layer", and
@@ -211,7 +213,7 @@ Smallest credible seam, in four pieces:
 | `Int3` (struct, not interface) | `Vector3I` | 46 |
 
 ```csharp
-// the whole seam. VoxelWorld already satisfies this verbatim (src/VoxelWorld.cs:462).
+// the whole seam. VoxelWorld already satisfies this verbatim (src/VoxelWorld.cs:461).
 public interface IBlockReader { Block GetBlock(int x, int y, int z); }
 public interface INoise2D { float Sample(float x, float z); }
 public interface IClock { ulong TicksUsec { get; } }
@@ -281,9 +283,12 @@ it should.
 
 ## Doc-vs-code check
 
-`docs/architecture.md` is unusually honest about its coupling — "Godot stays at the edges, not
-outside" is a weaker claim than "fully separated", and the doc states `ChunkVisual` holds nodes
-deliberately. Its structural claims hold up. Two sentences do not.
+`docs/architecture.md` is unusually honest for its genre — "Godot stays at the edges, not
+outside" claims less than "fully separated", and it states `ChunkVisual`'s node handles
+*deliberately* rather than pretending they are not there. Of 80 falsifiable claims checked against
+`src/`, **61 verified, 15 overclaimed, 4 unverifiable**, full table in
+`.pi/boundary/doc-check.tsv`. The overclaims that matter to the engine question are below; the
+trivia is in the second table.
 
 **Overclaim 1** — sentence originally at `docs/architecture.md:143` (corrected here, now line 145):
 
@@ -304,7 +309,7 @@ False four lines above its own component listing: `PlayerBody` holds `CharacterB
 `Camera3D Camera` (`src/PlayerSystems.cs:12-13`), `PlayerIntent.Wish` is a `Vector3` (`:34`), and
 `PlayerMining.Target` is a `Vector3I` (`:50`). Four engine-aware components, not one.
 
-Both corrected in place, minimally (see `git show` for the two-hunk diff):
+Both corrected in place, minimally (see the two-hunk diff in this commit):
 
 > `ChunkVisual` holds Godot node handles — an engine-aware component, and not the only one
 > (`PlayerBody` holds the player node and camera; `PlayerIntent.Wish` and `PlayerMining.Target`
@@ -314,9 +319,65 @@ Both corrected in place, minimally (see `git show` for the two-hunk diff):
 > `ChunkVisual` puts engine handles into the archetype, and `PollInput` in `PlayerSystems.cs` is
 > the only place that reads gameplay `Input` (`Player.cs` only toggles mouse capture).
 
-Every other checked claim held — including the two most load-bearing for this audit: "the only
-engine-aware component" is wrong in the way itemised above but the *handle, never game state* rule
-it states is upheld (`src/ChunkComponents.cs:37` is the only engine-typed chunk struct), and "the
-world owns both the store and its systems" (`src/VoxelWorld.cs:14-19`). The doc's "Known
-weaknesses" list misses the largest weakness in this document — that none of it compiles without
-the engine — which is exactly the gap this file fills.
+### The overclaim that is this document's whole subject
+
+`docs/architecture.md:144` states the coupling as deliberate and bounded:
+
+> - **Godot stays at the edges, not outside.**
+
+The intent is right, the boundary is not: **13 of 13 `src/*.cs` files carry `using Godot;` and 0
+carry none**, so Godot is not at the edge of the codebase, only at the edge of the *entity model*.
+This is the gap `docs/engine-boundary.md` fills, and it is a wording problem rather than a design
+failure — the doc's next sentence already concedes a full separation was judged not worth it.
+Left as-is: it is a judgement call about scope, not a false fact.
+
+### The structural overclaim worth knowing about
+
+`docs/architecture.md:130-133` claims:
+
+> Only two channels exist between systems:
+> 1. **Archetype transitions (tags)** — a notification, not a call.
+> 2. **`VoxelWorld`'s block API** — the single entry point for changing the world.
+
+There is a third, and it runs through gameplay: `PlayerSystems.Move` calls `TeleportToSurface`
+(`src/PlayerSystems.cs:143` → `:201`), which calls `world.EnsureAreaAround`
+(`src/VoxelWorld.cs:428`), which **creates chunk entities and runs the mesh and collision systems
+directly** (`src/VoxelWorld.cs:441`, `:447-448`) — bypassing the tag pipeline that the rest of the
+doc builds its story on. `src/Player.cs:92` and `src/Game.cs:55` reach it too. Three consequences:
+
+- "Gameplay never mutates the world" (`:157`) is true of *blocks*, not of *structure*.
+- "`ApplyPendingEdits()` — the only world mutation" (`:120`) understates `SetBlock`
+  (`src/VoxelWorld.cs:477`), `CreateChunk` (`:387`) and `EnsureAreaAround` (`:428`), all public.
+- "a system calling another system" does not exist (`:135-136`) is false in the one direction that
+  matters: `Move` (`src/PlayerSystems.cs:143`) → `TeleportToSurface` (`:201`) → `EnsureAreaAround`
+  (`src/VoxelWorld.cs:428`) → `RebuildMesh`/`UpdateCollision` (`:447-448`).
+
+This is also an **engine-boundary** finding, not just a doc nit: `EnsureAreaAround` is where the
+chunk lifecycle creates `MeshInstance3D`s and `StaticBody3D`s, and gameplay already calls it. It is
+the second place — after `VoxelWorld : Node3D` — where the seam would have to be cut.
+
+### Remaining overclaims, compacted
+
+| doc line | claim | counter-evidence |
+| --- | --- | --- |
+| 17 | "six data types, four tags" | seven `IComponent` types (`src/ChunkComponents.cs:10,27,35`, `src/PlayerSystems.cs:10,16,32,48`) — the doc's own listing below the heading shows all seven |
+| 76 | `PollInput` is "the only place that reads `Input`" | `src/Player.cs:48,58,64` reads/writes `Input.MouseMode` |
+| 85 | "Budget in milliseconds, not counts. Any 'do N per frame' scheduler is a latent hitch." | `src/VoxelWorld.cs:31` `ChunksPerFrame = 4`, used at `:151` — streaming *is* a do-N-per-frame scheduler |
+| 148 | "The world owns both the store and its systems" | the world owns the store (`:18`) and the chunk systems (`:149,195,252`); the player systems are static in a separate class, driven by `src/Game.cs:99-106,183` |
+| 170 | "Vein mining, leaf decay and falling sand are the same hook" | only `Wood` has a rule — `src/EditRequests.cs:59-60`, with the hook it would use commented as "more cases here" |
+| 174 | "Placement legality lives in exactly one function" | occupancy is re-checked at `src/VoxelWorld.cs:383`, air at `src/PlayerSystems.cs:225`, and `src/SelfTest.cs:155-159` bypasses both |
+| 186 | "Systems are static methods taking the store" | the chunk systems are instance methods on the world (`src/VoxelWorld.cs:28-31,149,195,252`); only the player systems are static |
+
+Not falsifiable from source and left alone: `~230 resident chunks` (`:17`), `ApplyPendingEdits`
+frame order (`:163` — both are `_Process` callbacks, `src/Game.cs:94` and `src/VoxelWorld.cs:80`, and
+the relative order needs a runtime observation), and the mesher allocation numbers (`:229-232`).
+
+All `docs/architecture.md` line numbers above are as of the commit that adds this file; the two
+fixes shift everything after line 58 by +2.
+
+None of the seven were edited. They are outside the engine-boundary question, they are not
+decoupling claims, and the user asked for a confirmation — not for a doc cleanup. The two that
+were edited were edited because they are the two the decoupling argument actually rests on.
+
+The doc's "Known weaknesses" list misses the largest weakness in this document — that none of it
+compiles without the engine — which is exactly the gap this file fills.
