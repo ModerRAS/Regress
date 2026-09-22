@@ -15,3 +15,11 @@ export_credentials.cfg
 .mono/
 data_*/
 mono_crash.*.json
+
+# .NET build output
+bin/
+obj/
+*.user
+
+# Local agent state
+.pi/
