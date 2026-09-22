@@ -391,7 +391,7 @@ public partial class VoxelWorld : Node3D
         ulong started = Time.GetTicksUsec();
         var coord = ChunkCoord.Of(key);
         var blocks = new byte[ChunkMesher.Volume];
-        Terrain.Fill(this, coord, blocks);
+        Terrain.Fill(coord, blocks);
         double genMs = (Time.GetTicksUsec() - started) / 1000.0;
         GenCount++;
         GenMsTotal += genMs;

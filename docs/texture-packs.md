@@ -8,7 +8,8 @@ else.
 
 v1 renders every chunk through a single `Texture2DArray` and a single `ShaderMaterial`. There is
 no textured/untextured toggle: when no pack loads, the loader synthesises twelve flat tiles in
-memory from `Blocks.ColorOf`. That is why "no pack" cannot fail — it never reads a file.
+memory from the sRGB table in `src/TexPack.cs`. That is why "no pack" cannot fail — it never
+reads a file.
 
 ## In one screen
 
@@ -40,7 +41,7 @@ The mesher's side of the contract is three arrays:
 ```csharp
 arrays[(int)Mesh.ArrayType.TexUV]  = uvs.ToArray();   // tile-local [0,1], (0,0) = PNG top-left
 arrays[(int)Mesh.ArrayType.TexUV2] = uv2s.ToArray();  // (tileIndex, 0), the frozen index above
-// COLOR becomes FaceTint[face] only — never Blocks.ColorOf
+// COLOR becomes FaceTint[face] only — never block colour
 ```
 
 - `UV` addresses a point **inside** one tile. `repeat_disable` + `filter_nearest` mean a
@@ -60,8 +61,8 @@ arrays[(int)Mesh.ArrayType.TexUV2] = uv2s.ToArray();  // (tileIndex, 0), the fro
 Eight renderable `Block` enum members (Air excluded) × six faces = **48 cells**, each mapped
 exactly once. Enumerated from `src/Blocks.cs`, cross-checked against `ChunkMesher.Dirs`
 (`PosX=0, NegX=1, Top=2, Bottom=3, PosZ=4, NegZ=5`). `Wood.Bottom → wood_top` is a spec
-convention (log end-grain), not a fact derivable from `Blocks.ColorOf`, which has per-face
-branches only for Grass.
+convention (log end-grain), not a fact derivable from the procedural colour table in
+`src/TexPack.cs`, which has per-face entries only for Grass.
 
 | Block | FaceName | TileKey | TileIndex |
 | --- | --- | --- | ---: |
@@ -314,11 +315,11 @@ void fragment() {
   keys (Grass does), and the mesher emits one quad per face with that face's index.
 - **`COLOR` is tint only.** The mesher writes `FaceTint[face]` — `0.72, 0.72, 1.00, 0.45, 0.86,
   0.86`, the same linear numbers used today — and block identity lives *only* in the tile. For
-  every block, including Bedrock and blocks adjacent to Air, `Blocks.ColorOf` must not appear in
-  the mesh colour path; leaving any block-colour term in double-applies the colour. The mesh
+  every block, including Bedrock and blocks adjacent to Air, no block-colour term may appear in
+  the mesh colour path; leaving one in double-applies the colour. The mesh
   format stores vertex colour as RGBA8, so the tint reaches the shader quantized to 1/255.
-- **`Blocks.ColorOf` is demoted to fallback-art source.** It still defines what the game looks
-  like with no pack, but only as the colour table for the procedural tiles.
+- **The sRGB table in `src/TexPack.cs` is the fallback-art source.** It defines what the game
+  looks like with no pack, as the colour table for the procedural tiles.
 - **Leaves alpha, v1:** binary cutout via scissor. Leaf tiles are RGBA; a pixel with alpha < 0.5
   is discarded. There is no blended transparency in v1 — no sort order, no per-face two-sided
   rendering, so a leaf cube keeps `cull_back` exactly like stone.
@@ -331,9 +332,9 @@ void fragment() {
 
 ### Procedural tiles (rung 4)
 
-The loader synthesises the twelve tiles as 16×16 **sRGB 8-bit** images — the inverse of the
-`SrgbToLinear()` that `Blocks.ColorOf` applies — so the sampler's `source_color` conversion lands
-back on today's linear values:
+The loader synthesises the twelve tiles as 16×16 **sRGB 8-bit** images from the procedural table
+in `src/TexPack.cs` — so the sampler's `source_color` conversion lands back on today's linear
+values:
 
 | key | sRGB | key | sRGB |
 | --- | --- | --- | --- |

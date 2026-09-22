@@ -1,4 +1,3 @@
-using Godot;
 
 namespace Regress;
 
@@ -47,28 +46,6 @@ public static class Blocks
     public static float HardnessOf(Block b) => Hardness[(int)b];
 
     public static bool IsBreakable(Block b) => HardnessOf(b) >= 0f;
-
-    // ponytail: no texture atlas, per-face baked vertex colours keep the mesher single-pass.
-    // Swap in an atlas + UV pass here when textures actually matter.
-    // Colours are authored in sRGB; the renderer treats vertex colours as linear.
-    public static Color ColorOf(Block b, int face)
-    {
-        Color srgb = b switch
-        {
-            Block.Stone => new Color(0.52f, 0.52f, 0.55f),
-            Block.Dirt => new Color(0.44f, 0.30f, 0.20f),
-            Block.Grass when face == Face.Top => new Color(0.34f, 0.62f, 0.24f),
-            Block.Grass when face == Face.Bottom => new Color(0.44f, 0.30f, 0.20f),
-            Block.Grass => new Color(0.36f, 0.50f, 0.24f),
-            Block.Sand => new Color(0.86f, 0.80f, 0.56f),
-            Block.Wood => new Color(0.36f, 0.26f, 0.15f),
-            Block.Plank => new Color(0.68f, 0.51f, 0.31f),
-            Block.Leaves => new Color(0.20f, 0.45f, 0.17f),
-            Block.Bedrock => new Color(0.16f, 0.16f, 0.18f),
-            _ => Colors.Magenta,
-        };
-        return srgb.SrgbToLinear();
-    }
 
     public static string NameOf(Block b) => b.ToString();
 }

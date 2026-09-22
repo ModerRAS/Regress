@@ -96,7 +96,7 @@ public static class ChunkMesher
 						int start = verts.Count;
 						var corner = FaceCorners[f];
 						// Texture is the base colour, so COLOR is the face tint alone —
-						// Blocks.ColorOf must stay out of this path or block colour lands twice.
+						// No block-colour term here, or block colour lands twice.
 						float tint = FaceTint[f];
 						var color = new Color(tint, tint, tint);
 						var normal = new Vector3(d.X, d.Y, d.Z);

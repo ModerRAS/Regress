@@ -237,7 +237,7 @@ Effort, in honest S/M/L:
 
 | step | size | what | result |
 | --- | --- | --- | --- |
-| delete dead code | **S** (~1 h) | remove `Blocks.ColorOf` (`Blocks.cs:54-70`, no call sites) and the unused `VoxelWorld world` parameter at `TerrainGenerator.cs:59` | `Blocks.cs` becomes engine-free outright — **built and verified** |
+| delete dead code | **S** (~1 h) | **done** — removed `Blocks.ColorOf` (`Blocks.cs`, no call sites) and the unused `VoxelWorld world` parameter at `TerrainGenerator.cs:59` | `Blocks.cs` becomes engine-free outright — **built and verified** |
 | port the rules core | **S/M** (~half a day) | `Int3`; `IBlockReader` at 3 sites; `INoise2D` at 3; `Mathf.*` → `Math.*` | **331 LOC engine-free, 0 errors — built and verified** in `.pi/boundary/seam/` |
 | split world and player | **M** (~1–2 days) | `ChunkStore` (engine-free: `EntityStore`, `_index`, `GetBlock`/`SetBlock`/`CreateChunk`/`MarkDirty`) + `ChunkRenderer : Node3D` (material, nodes, budget loops); `PlayerRules` (pure) + the node/input adapter; `IClock` at 16 sites | the 69-assertion selftest runs under `dotnet test` with no Godot |
 
@@ -268,10 +268,10 @@ code has the side effects in the right places and the decisions in the wrong one
 Regress is **not** separated, and it is one thin seam away from being separable: 0% of `src/`
 compiles without GodotSharp, but the *calls* that couple logic to the engine are four parameter
 sites, and removing them plus swapping one value struct was verified to free 331 LOC of the rules
-core. Today the coupling is shallow — a dead method, 46 `Vector3I`s, 44 `Mathf`s, a
+core. Today the coupling is shallow — 46 `Vector3I`s, 44 `Mathf`s, a
 `FastNoiseLite` field, a `Time` call loop, 10 `Input` lines inside `PollInput`, and
 `VoxelWorld : Node3D` putting the world, its ECS store and its systems on one node. The cheapest
-credible path is not a rewrite: delete the dead `Blocks.ColorOf`, add `Int3` and three one-method
+credible path is not a rewrite: the dead `Blocks.ColorOf` is gone; add `Int3` and three one-method
 interfaces, then split node work out of `VoxelWorld` and `PlayerSystems` — half a session for the
 first two steps (S, verified), 1–2 days for the split (M). Development is constrained by the engine
 today in a concrete way worth naming: **the 69-assertion selftest cannot run without

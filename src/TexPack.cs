@@ -24,7 +24,7 @@ public static class TexPack
 
     private const int Missing = 11;
 
-    /// <summary>Rung-4 art, authored in sRGB — the inverse of Blocks.ColorOf's SrgbToLinear.</summary>
+    /// <summary>Rung-4 art, authored in sRGB — the sampler's source_color conversion yields linear.</summary>
     private static readonly Color[] FallbackColors =
     {
         new(0.52f, 0.52f, 0.55f), new(0.44f, 0.30f, 0.20f), new(0.34f, 0.62f, 0.24f),

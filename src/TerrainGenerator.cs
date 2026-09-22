@@ -56,7 +56,7 @@ public sealed class TerrainGenerator
     }
 
     /// <summary>Fills the part of a chunk that is at or below the surface, then stamps trees.</summary>
-    public void Fill(VoxelWorld world, ChunkCoord coord, byte[] blocks)
+    public void Fill(ChunkCoord coord, byte[] blocks)
     {
         int bx = coord.X * 16, by = coord.Y * 16, bz = coord.Z * 16;
 
