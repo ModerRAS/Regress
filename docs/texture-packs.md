@@ -393,8 +393,8 @@ spec was frozen:
 - **Bundled `res://` PNG bytes are readable in dev runs, but the engine warns the raw read
   "will not work on export."** The spec therefore routes `res://` tiles through Godot's importer
   (`ResourceLoader.Load<Texture2D>().GetImage()`) — export-safe by construction — while OS and
-  `user://` roots keep the raw-bytes path. No export has been run yet (no templates installed);
-  see Known weaknesses.
+  `user://` roots keep the raw-bytes path. The release workflow now exports a Linux build and
+  loads all twelve tiles through this path; see Known weaknesses.
 
 ## Install and select a pack
 
@@ -424,11 +424,13 @@ the bundled pack, `--pack=texturepacks/default`. Restart to change packs — v1 
 
 ## Known weaknesses
 
-1. **No exported build has been run.** `res://` tiles go through Godot's importer, the only
-   export-safe path, but whether the bundled pack's `.import` files and lossless mode survive a
-   real export is unverified. The failure is safe — procedural tiles take over — which is exactly
-   why it would be silent. Upgrade path: one exported build; check the startup line and one
-   tile's pixels; force a lossless import preset if VRAM compression crept in.
+1. **Exported builds are smoke-tested, not pixel-tested.** The release workflow exports a Linux
+   build and runs `--selftest` headless inside it, asserting
+   `texpack: using 'Default' (res://texturepacks/default) tile_size=16 tiles=12/12`: the bundled
+   `.import` files and all twelve lossless tiles (`compress/mode=0`) survive the export and load
+   back as 16×16 images. What is still unverified is pixel content — the check proves the images
+   load at the right size, not that their pixels match the generator. Upgrade path: assert one
+   known pixel per tile in `SelfTest`, then assert that too in the release workflow.
 2. **Duplicate JSON keys are undetected.** Godot's parser keeps the last occurrence; four fields
    do not justify a second parser.
 3. **Symlinks are not resolved** — the trust boundary is lexical.

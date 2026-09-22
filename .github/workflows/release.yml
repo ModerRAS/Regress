@@ -109,11 +109,13 @@ jobs:
           zip -qr Regress-windows-x86_64.zip windows
 
       - name: Publish release
+        # dry_run=true skips this step: softprops/action-gh-release@v2 has no dry_run input of its
+        # own, and this step is the only thing that touches the release API.
+        if: github.event_name == 'push' || inputs.dry_run != true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.version != '' && inputs.version || github.ref_name }}
           name: ${{ inputs.version != '' && inputs.version || github.ref_name }}
-          dry_run: ${{ inputs.dry_run == true }}
           files: build/Regress-*.zip
           fail_on_unmatched_files: true
         env:
