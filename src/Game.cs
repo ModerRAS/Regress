@@ -20,6 +20,7 @@ public partial class Game : Node3D
     {
         _selfTest = HasArg("--selftest");
         _shotPath = ArgValue("--shot=");
+        VoxelWorld.UseTiles(TexPack.Load(ArgValue("--pack=")).Array);
 
         World = new VoxelWorld { Name = "World", Focus = new Vector3(0.5f, 0, 0.5f) };
         if (int.TryParse(ArgValue("--view="), out int view)) World.ViewDistance = view;

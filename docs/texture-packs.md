@@ -315,7 +315,8 @@ void fragment() {
 - **`COLOR` is tint only.** The mesher writes `FaceTint[face]` — `0.72, 0.72, 1.00, 0.45, 0.86,
   0.86`, the same linear numbers used today — and block identity lives *only* in the tile. For
   every block, including Bedrock and blocks adjacent to Air, `Blocks.ColorOf` must not appear in
-  the mesh colour path; leaving any block-colour term in double-applies the colour.
+  the mesh colour path; leaving any block-colour term in double-applies the colour. The mesh
+  format stores vertex colour as RGBA8, so the tint reaches the shader quantized to 1/255.
 - **`Blocks.ColorOf` is demoted to fallback-art source.** It still defines what the game looks
   like with no pack, but only as the colour table for the procedural tiles.
 - **Leaves alpha, v1:** binary cutout via scissor. Leaf tiles are RGBA; a pixel with alpha < 0.5

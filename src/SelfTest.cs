@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using Friflo.Engine.ECS;
 using Godot;
 
@@ -195,6 +196,12 @@ public static class SelfTest
         Check(world.GetBlock(placed.X, placed.Y, placed.Z) == Block.Wood, "read back at negative x/y/z");
         Check(world.SetBlock(placed.X, placed.Y, placed.Z, Block.Air), "clear negative-coord block");
 
+        // ---- texture pack + mesher texture attributes ---------------------
+        CheckTileIndexMap();
+        CheckResolveTilePath();
+        CheckPackLoading();
+        CheckMesherTextureArrays(world);
+
         return _failures;
     }
 
@@ -259,6 +266,185 @@ public static class SelfTest
             }
         }
         return faces * 6;
+    }
+
+    // ---- texture pack ----------------------------------------------------
+
+    private static void CheckTileIndexMap()
+    {
+        // The frozen 48-cell table from docs/texture-packs.md, rows by (int)Block, cols by Face.
+        int[,] expected =
+        {
+            { 11, 11, 11, 11, 11, 11 }, // Air: never meshed -> missing (magenta)
+            { 0, 0, 0, 0, 0, 0 },       // Stone
+            { 1, 1, 1, 1, 1, 1 },       // Dirt
+            { 3, 3, 2, 4, 3, 3 },       // Grass: sides, top, bottom
+            { 5, 5, 5, 5, 5, 5 },       // Sand
+            { 6, 6, 7, 7, 6, 6 },       // Wood: top and bottom share the end grain
+            { 8, 8, 8, 8, 8, 8 },       // Plank
+            { 9, 9, 9, 9, 9, 9 },       // Leaves
+            { 10, 10, 10, 10, 10, 10 }, // Bedrock
+        };
+        int bad = 0;
+        for (int b = 0; b <= (int)Block.Bedrock; b++)
+            for (int f = 0; f < 6; f++)
+                if (TexPack.TileIndex((Block)b, f) != expected[b, f]) bad++;
+        Check(bad == 0, $"48-cell Block+Face -> tile index map is the frozen table ({bad} wrong)");
+        Check(TexPack.TileIndex(Block.Bedrock, Face.Top) == 10,
+            "bedrock is covered from the Block enum, not Blocks.Palette");
+    }
+
+    private static void CheckResolveTilePath()
+    {
+        const string root = "user://texpack_selftest";
+        Directory.CreateDirectory(ProjectSettings.GlobalizePath(root));
+        string rootFull = System.IO.Path.GetFullPath(ProjectSettings.GlobalizePath(root));
+        string[] rejected =
+        {
+            "", "   ", "../stone.png", "a/../b.png", "/abs.png", "C:/abs.png",
+            "\\\\server\\share\\x.png", "..", "tiles/../..",
+        };
+        int accepted = 0;
+        foreach (var raw in rejected)
+            if (TexPack.ResolveTilePath(raw, root, rootFull) != null) accepted++;
+        Check(accepted == 0, $"ResolveTilePath rejects {rejected.Length} traversal/absolute/empty paths ({accepted} accepted)");
+        Check(TexPack.ResolveTilePath("tiles/stone.png", root, rootFull) == root + "/tiles/stone.png",
+            "ResolveTilePath accepts a normal relative path");
+    }
+
+    private static void CheckPackLoading()
+    {
+        string baseDir = ProjectSettings.GlobalizePath("user://texpack_selftest");
+        if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
+
+        // A legal pack: twelve 16x16 tiles, rung 1 hit.
+        string legal = baseDir + "/legal";
+        WritePack(legal, 1, AllTiles());
+        for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(legal, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
+        var pack = TexPack.Load(legal);
+        int pngLayers = 0;
+        foreach (var s in pack.Sources) if (s == TexPack.TileSource.Png) pngLayers++;
+        Check(pack.Source == legal && pack.Resolved == 12 && pack.Array != null && pack.Array.GetLayers() == 12
+            && pngLayers == 12,
+            $"legal pack loads all twelve tiles from rung 1 ({pack.Resolved}/12)");
+
+        // An unsupported version rejects the whole pack and discovery moves on.
+        string future = baseDir + "/future";
+        WritePack(future, 2, AllTiles());
+        for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(future, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
+        var rejected = TexPack.Load(future);
+        Check(rejected.Source != future, $"version 2 pack is skipped whole (using {rejected.Source})");
+
+        // A path escape loses only that tile, which becomes the missing tile.
+        string escape = baseDir + "/escape";
+        WritePack(escape, 1, AllTiles() + ", \"stone\": \"../escape.png\"");
+        for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(escape, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
+        var escaped = TexPack.Load(escape);
+        Check(escaped.Source == escape && escaped.Resolved == 11
+            && escaped.Sources[0] == TexPack.TileSource.Missing && escaped.Sources[11] == TexPack.TileSource.Png,
+            $"escaped stone path falls back to the missing tile ({escaped.Resolved}/12)");
+
+        // A wrong-size tile loses only that tile.
+        string wrongSize = baseDir + "/size";
+        WritePack(wrongSize, 1, AllTiles());
+        for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(wrongSize, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
+        WriteTile(wrongSize, "tiles/stone.png", 8, Colors.Red);
+        var sized = TexPack.Load(wrongSize);
+        Check(sized.Source == wrongSize && sized.Resolved == 11
+            && sized.Sources[0] == TexPack.TileSource.Missing && sized.Sources[11] == TexPack.TileSource.Png,
+            $"wrong-size tile falls back to the missing tile ({sized.Resolved}/12)");
+
+        // Unknown key and unknown field are ignored with warnings; the pack still loads.
+        string unknown = baseDir + "/unknown";
+        WritePack(unknown, 1, AllTiles() + ", \"gravel\": \"tiles/gravel.png\"", extra: ", \"author\": \"nobody\"");
+        for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(unknown, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
+        var ignored = TexPack.Load(unknown);
+        Check(ignored.Source == unknown && ignored.Resolved == 12,
+            $"unknown key and unknown field are ignored, the pack still loads ({ignored.Resolved}/12)");
+
+        // With no usable `missing` tile, a broken tile takes its own procedural colour.
+        string noMissing = baseDir + "/nomissing";
+        WritePack(noMissing, 1, AllTiles(includeMissing: false) + ", \"stone\": \"tiles/gone.png\"");
+        for (int i = 0; i < TexPack.KeyCount - 1; i++) WriteTile(noMissing, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
+        var last = TexPack.Load(noMissing);
+        Check(last.Source == noMissing && last.Resolved == 10
+            && last.Sources[0] == TexPack.TileSource.Procedural && last.Sources[11] == TexPack.TileSource.Procedural,
+            "without a missing tile: broken tile uses its procedural colour, missing is magenta");
+
+        if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
+    }
+
+    private static void CheckMesherTextureArrays(VoxelWorld world)
+    {
+        var entity = world.CreateChunk(new Vector3I(90, 90, 90));
+        var blocks = entity.GetComponent<ChunkBlocks>().Value;
+        Array.Clear(blocks);
+        blocks[ChunkBlocks.Index(8, 8, 8)] = (byte)Block.Grass;
+        var mesh = ChunkMesher.Build(world, entity.GetComponent<ChunkCoord>(), blocks, out _);
+        var arrays = mesh.SurfaceGetArrays(0);
+        var norms = (Vector3[])arrays[(int)Mesh.ArrayType.Normal];
+        var colors = (Color[])arrays[(int)Mesh.ArrayType.Color];
+        var uv = (Vector2[])arrays[(int)Mesh.ArrayType.TexUV];
+        var uv2 = (Vector2[])arrays[(int)Mesh.ArrayType.TexUV2];
+        float[] tint = { 0.72f, 0.72f, 1.00f, 0.45f, 0.86f, 0.86f };
+
+        int wrongTile = 0, wrongColor = 0, outOfRange = 0;
+        for (int i = 0; i < norms.Length; i++)
+        {
+            int face = FaceOfNormal(norms[i]);
+            if (uv2[i].X != TexPack.TileIndex(Block.Grass, face) || uv2[i].Y != 0f) wrongTile++;
+            if (!TintClose(colors[i].R, tint[face]) || !TintClose(colors[i].G, tint[face])
+                || !TintClose(colors[i].B, tint[face])) wrongColor++;
+            if (uv[i].X < 0f || uv[i].X > 1f || uv[i].Y < 0f || uv[i].Y > 1f) outOfRange++;
+        }
+        Check(norms.Length == 24 && wrongTile == 0,
+            $"mesher writes the frozen tile index to UV2.x on all six faces ({wrongTile} wrong)");
+        Check(wrongColor == 0, $"mesher COLOR is FaceTint only, not block colour x tint ({wrongColor} wrong)");
+        Check(outOfRange == 0, $"tile-local UV stays inside [0,1] ({outOfRange} outside)");
+        Check(TexPack.TileIndex(Block.Grass, Face.Top) != TexPack.TileIndex(Block.Grass, Face.PosX),
+            "grass top and side use different tile layers");
+    }
+
+    private static void WritePack(string dir, int version, string tilesJson, string extra = "")
+    {
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(dir + "/pack.json",
+            $"{{ \"version\": {version}, \"name\": \"selftest\", \"tile_size\": 16{extra}, \"tiles\": {{ {tilesJson} }} }}");
+    }
+
+    private static void WriteTile(string packDir, string rel, int size, Color color)
+    {
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(packDir + "/" + rel));
+        var image = Image.CreateEmpty(size, size, false, Image.Format.Rgba8);
+        image.Fill(color);
+        image.SavePng(packDir + "/" + rel);
+    }
+
+    private static string AllTiles(bool includeMissing = true)
+    {
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < TexPack.KeyCount; i++)
+        {
+            if (!includeMissing && i == TexPack.KeyCount - 1) continue;
+            if (sb.Length > 0) sb.Append(", ");
+            sb.Append($"\"{TexPack.Keys[i]}\": \"tiles/{TexPack.Keys[i]}.png\"");
+        }
+        return sb.ToString();
+    }
+
+    private static Color KeyColor(int index) => new((index + 1) / 13f, 0.5f, 0.25f);
+
+    // Mesh COLOR is stored as RGBA8, so the written tint comes back within half a step.
+    private static bool TintClose(float actual, float expected) => Mathf.Abs(actual - expected) <= 1f / 255f;
+
+    private static int FaceOfNormal(Vector3 n)
+    {
+        if (n.X > 0.5f) return Face.PosX;
+        if (n.X < -0.5f) return Face.NegX;
+        if (n.Y > 0.5f) return Face.Top;
+        if (n.Y < -0.5f) return Face.Bottom;
+        if (n.Z > 0.5f) return Face.PosZ;
+        return Face.NegZ;
     }
 
     private static void Check(bool condition, string what)

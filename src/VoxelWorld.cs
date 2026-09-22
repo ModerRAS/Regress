@@ -44,12 +44,16 @@ public partial class VoxelWorld : Node3D
     public int MeshCount { get; private set; }
     public int CollisionCount { get; private set; }
 
-    private static readonly StandardMaterial3D Material = new()
+    // One shared material for every chunk: the tile texture is the base colour and vertex
+    // colour is tint only. TexPack.Load injects the tile array once at startup, so the
+    // renderer has no textured/untextured branch (docs/texture-packs.md).
+    private static readonly ShaderMaterial Material = new()
     {
-        VertexColorUseAsAlbedo = true,
-        ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-        CullMode = BaseMaterial3D.CullModeEnum.Back,
+        Shader = GD.Load<Shader>("res://src/voxel_tiles.gdshader"),
     };
+
+    /// <summary>Injects the loaded tile array into the shared chunk material.</summary>
+    public static void UseTiles(Texture2DArray tiles) => Material.SetShaderParameter("tiles", tiles);
 
     /// <summary>Chunk coordinate -> entity. ECS has no spatial index, so the world keeps one.</summary>
     private readonly Dictionary<Vector3I, Entity> _index = new();
