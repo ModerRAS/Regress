@@ -78,7 +78,8 @@ jobs:
         run: dotnet build
 
       - name: Import project
-        run: "$HOME/godot/godot" --headless --path . --import
+        run: |
+          "$HOME/godot/godot" --headless --path . --import
 
       - name: Export Linux and Windows
         run: |
