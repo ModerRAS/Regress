@@ -1,8 +1,9 @@
 # Texture packs
 
 A texture pack is a **directory** containing a `pack.json` manifest and the PNGs it names — no
-archive, no second manifest name, no in-engine download. Twelve tile keys are the entire
-vocabulary, and their indices are frozen because they are the layer order the renderer receives.
+archive, no second manifest name, no in-engine download. Twelve base tile keys and 48 optional
+per-face override keys are the entire vocabulary, and their indices are frozen because they are
+the layer order the renderer receives.
 The pack supplies art; the game supplies the mapping from `Block` + `Face` to a key, and nothing
 else.
 
@@ -13,7 +14,12 @@ reads a file.
 
 ## In one screen
 
-- A pack is a directory: `pack.json` plus PNGs under it. Twelve keys, fixed indices `0..11`.
+- A pack is a directory: `pack.json` plus PNGs under it. Twelve base keys, fixed indices `0..11`.
+- Optional **per-face overrides**: `<block>_<suffix>` keys (`stone_posx`, `leaves_negz`, …), suffix
+  order `posx, negx, top, bottom, posz, negz`, layer `12 + block*6 + face`. A provided override
+  wins for exactly that cell; every other cell keeps the frozen base map. A pack with only the
+  twelve base keys is unchanged; an override whose PNG is missing or bad falls back to `missing`
+  like any other tile. One override allocates all 60 layers.
 - Discovery: `--pack=<dir>` → `user://texturepacks/<selected.txt>` → `res://texturepacks/default`
   → procedural tiles. The first loadable pack wins; the last rung reads no files. Every run
   prints one `texpack: using …` success line, including rung 4.
@@ -25,7 +31,7 @@ reads a file.
 - v1: `filter_nearest`, no mipmaps, no alpha blending, no PBR, no animation, no block
   definitions in packs.
 
-## The contract: twelve keys, frozen indices
+## The contract: twelve base keys, frozen indices
 
 | # | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -56,6 +62,46 @@ arrays[(int)Mesh.ArrayType.TexUV2] = uv2s.ToArray();  // (tileIndex, 0), the fro
   direction-agnostic** — no tile may depend on being mirrored or rotated. Adding a per-face UV
   basis is a v2 change.
 
+### Optional per-face overrides
+
+Forty-eight optional keys extend the base vocabulary without touching it. A key is
+`<block>_<suffix>`, block in `TexPack.Renderable` order, suffix in `Face` order:
+
+| suffix | `posx` | `negx` | `top` | `bottom` | `posz` | `negz` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `Face` | 0 | 1 | 2 | 3 | 4 | 5 |
+
+`cell = blockOrdinal * 6 + faceIndex`, and the override's layer is **`12 + cell`** (12..59).
+`TexPack.LayerCount` is 60: the twelve base keys then the 48 override slots, appended and never
+renumbered.
+
+Resolution per `(Block, Face)`: if the manifest provides that cell's exact override key, the cell
+samples layer `12 + cell`; otherwise it keeps the frozen base mapping in the completeness table
+below. A pack that ships only the twelve base keys resolves every cell through the base map,
+exactly as before — overrides are additive.
+
+Three override spellings are also base keys, and a manifest key is read as a **base** key when the
+name exists in both vocabularies: `grass_top` (Grass.Top), `grass_bottom` (Grass.Bottom) and
+`wood_top` (Wood.Top). For those cells the spelling is an alias for the base key, so they sample
+layers **2, 4 and 7** rather than `12 + cell`, and no cell ever samples the matching override
+slots (26, 27, 38). No capability is lost: for Grass the base keys already give top and bottom
+their own tiles, so the alias is behaviourally identical to the override; for Wood `wood_top`
+keeps today's shared log-end on both ends, with `wood_bottom` (layer 39, not shadowed) available
+to make the bottom distinct.
+
+A provided override whose PNG is missing, undecodable, root-escaping or the wrong size is not a
+manifest fault: like a base key it claims its slot and the pixels become the pack's `missing`
+tile. The pack is never rejected for it, and an unknown key still warns once and is ignored.
+
+Array allocation is all-or-nothing: with no override the array has today's exactly 12 layers; as
+soon as one override key is provided the array has all 60, unused slots holding the `missing`
+tile and referenced by no cell. `tiles=12/12` in the success line still counts base keys only;
+the override count travels on its own line, printed once when at least one override is provided:
+
+```
+texpack: <source>: N/48 per-face overrides
+```
+
 ## Completeness: Block × Face → tile key
 
 Eight renderable `Block` enum members (Air excluded) × six faces = **48 cells**, each mapped
@@ -64,60 +110,68 @@ exactly once. Enumerated from `src/Blocks.cs`, cross-checked against `ChunkMeshe
 convention (log end-grain), not a fact derivable from the procedural colour table in
 `src/TexPack.cs`, which has per-face entries only for Grass.
 
-| Block | FaceName | TileKey | TileIndex |
-| --- | --- | --- | ---: |
-| Stone | PosX | `stone` | 0 |
-| Stone | NegX | `stone` | 0 |
-| Stone | Top | `stone` | 0 |
-| Stone | Bottom | `stone` | 0 |
-| Stone | PosZ | `stone` | 0 |
-| Stone | NegZ | `stone` | 0 |
-| Dirt | PosX | `dirt` | 1 |
-| Dirt | NegX | `dirt` | 1 |
-| Dirt | Top | `dirt` | 1 |
-| Dirt | Bottom | `dirt` | 1 |
-| Dirt | PosZ | `dirt` | 1 |
-| Dirt | NegZ | `dirt` | 1 |
-| Grass | PosX | `grass_side` | 3 |
-| Grass | NegX | `grass_side` | 3 |
-| Grass | Top | `grass_top` | 2 |
-| Grass | Bottom | `grass_bottom` | 4 |
-| Grass | PosZ | `grass_side` | 3 |
-| Grass | NegZ | `grass_side` | 3 |
-| Sand | PosX | `sand` | 5 |
-| Sand | NegX | `sand` | 5 |
-| Sand | Top | `sand` | 5 |
-| Sand | Bottom | `sand` | 5 |
-| Sand | PosZ | `sand` | 5 |
-| Sand | NegZ | `sand` | 5 |
-| Wood | PosX | `wood_side` | 6 |
-| Wood | NegX | `wood_side` | 6 |
-| Wood | Top | `wood_top` | 7 |
-| Wood | Bottom | `wood_top` | 7 |
-| Wood | PosZ | `wood_side` | 6 |
-| Wood | NegZ | `wood_side` | 6 |
-| Plank | PosX | `plank` | 8 |
-| Plank | NegX | `plank` | 8 |
-| Plank | Top | `plank` | 8 |
-| Plank | Bottom | `plank` | 8 |
-| Plank | PosZ | `plank` | 8 |
-| Plank | NegZ | `plank` | 8 |
-| Leaves | PosX | `leaves` | 9 |
-| Leaves | NegX | `leaves` | 9 |
-| Leaves | Top | `leaves` | 9 |
-| Leaves | Bottom | `leaves` | 9 |
-| Leaves | PosZ | `leaves` | 9 |
-| Leaves | NegZ | `leaves` | 9 |
-| Bedrock | PosX | `bedrock` | 10 |
-| Bedrock | NegX | `bedrock` | 10 |
-| Bedrock | Top | `bedrock` | 10 |
-| Bedrock | Bottom | `bedrock` | 10 |
-| Bedrock | PosZ | `bedrock` | 10 |
-| Bedrock | NegZ | `bedrock` | 10 |
+`TileKey`/`TileIndex` are the frozen **fallback** for a cell — what it samples when no override
+is provided — while `FaceKey` is the optional override for that same cell, at layer `12 + cell`.
+All 48 cells now resolve through the chain: exact override when the manifest provides it, else
+the fallback.
+
+| Block | FaceName | TileKey | TileIndex | FaceKey |
+| --- | --- | --- | ---: | --- |
+| Stone | PosX | `stone` | 0 | `stone_posx` |
+| Stone | NegX | `stone` | 0 | `stone_negx` |
+| Stone | Top | `stone` | 0 | `stone_top` |
+| Stone | Bottom | `stone` | 0 | `stone_bottom` |
+| Stone | PosZ | `stone` | 0 | `stone_posz` |
+| Stone | NegZ | `stone` | 0 | `stone_negz` |
+| Dirt | PosX | `dirt` | 1 | `dirt_posx` |
+| Dirt | NegX | `dirt` | 1 | `dirt_negx` |
+| Dirt | Top | `dirt` | 1 | `dirt_top` |
+| Dirt | Bottom | `dirt` | 1 | `dirt_bottom` |
+| Dirt | PosZ | `dirt` | 1 | `dirt_posz` |
+| Dirt | NegZ | `dirt` | 1 | `dirt_negz` |
+| Grass | PosX | `grass_side` | 3 | `grass_posx` |
+| Grass | NegX | `grass_side` | 3 | `grass_negx` |
+| Grass | Top | `grass_top` | 2 | `grass_top` |
+| Grass | Bottom | `grass_bottom` | 4 | `grass_bottom` |
+| Grass | PosZ | `grass_side` | 3 | `grass_posz` |
+| Grass | NegZ | `grass_side` | 3 | `grass_negz` |
+| Sand | PosX | `sand` | 5 | `sand_posx` |
+| Sand | NegX | `sand` | 5 | `sand_negx` |
+| Sand | Top | `sand` | 5 | `sand_top` |
+| Sand | Bottom | `sand` | 5 | `sand_bottom` |
+| Sand | PosZ | `sand` | 5 | `sand_posz` |
+| Sand | NegZ | `sand` | 5 | `sand_negz` |
+| Wood | PosX | `wood_side` | 6 | `wood_posx` |
+| Wood | NegX | `wood_side` | 6 | `wood_negx` |
+| Wood | Top | `wood_top` | 7 | `wood_top` |
+| Wood | Bottom | `wood_top` | 7 | `wood_bottom` |
+| Wood | PosZ | `wood_side` | 6 | `wood_posz` |
+| Wood | NegZ | `wood_side` | 6 | `wood_negz` |
+| Plank | PosX | `plank` | 8 | `plank_posx` |
+| Plank | NegX | `plank` | 8 | `plank_negx` |
+| Plank | Top | `plank` | 8 | `plank_top` |
+| Plank | Bottom | `plank` | 8 | `plank_bottom` |
+| Plank | PosZ | `plank` | 8 | `plank_posz` |
+| Plank | NegZ | `plank` | 8 | `plank_negz` |
+| Leaves | PosX | `leaves` | 9 | `leaves_posx` |
+| Leaves | NegX | `leaves` | 9 | `leaves_negx` |
+| Leaves | Top | `leaves` | 9 | `leaves_top` |
+| Leaves | Bottom | `leaves` | 9 | `leaves_bottom` |
+| Leaves | PosZ | `leaves` | 9 | `leaves_posz` |
+| Leaves | NegZ | `leaves` | 9 | `leaves_negz` |
+| Bedrock | PosX | `bedrock` | 10 | `bedrock_posx` |
+| Bedrock | NegX | `bedrock` | 10 | `bedrock_negx` |
+| Bedrock | Top | `bedrock` | 10 | `bedrock_top` |
+| Bedrock | Bottom | `bedrock` | 10 | `bedrock_bottom` |
+| Bedrock | PosZ | `bedrock` | 10 | `bedrock_posz` |
+| Bedrock | NegZ | `bedrock` | 10 | `bedrock_negz` |
 
 Key → cells: `stone` 6, `dirt` 6, `grass_top` 1, `grass_side` 4, `grass_bottom` 1, `sand` 6,
 `wood_side` 4, `wood_top` 2, `plank` 6, `leaves` 6, `bedrock` 6, `missing` 0
-(6+6+1+4+1+6+4+2+6+6+6 = 48).
+(6+6+1+4+1+6+4+2+6+6+6 = 48). These are the fallback counts. Of the 48 `FaceKey` names in the
+table, 45 are override-only and cover exactly one cell each; the three colliding names
+(`grass_top`, `grass_bottom`, `wood_top`) are base-key aliases — two cover one cell each and
+`wood_top` covers two, per the alias rule in "Optional per-face overrides".
 
 ## pack.json
 
@@ -129,7 +183,7 @@ Numbers arrive as `double`, so numeric rules are comparisons, not type identity.
 | `version` | number, integer | **yes** | — | must equal `1`; anything else **rejects the pack** |
 | `name` | string | no | directory name | cosmetic; wrong type warns and takes the directory name |
 | `tile_size` | number, integer | **yes** | — | `>= 1`; the width **and** height of every tile; missing or invalid **rejects the pack** |
-| `tiles` | object, key → string | no | `{}` | keys from the twelve; values are pack-relative paths (below) |
+| `tiles` | object, key → string | no | `{}` | keys from the twelve base keys or the 48 override keys; values are pack-relative paths (below) |
 
 `tile_size` is required because guessing it silently misaligns every tile. `name` is optional
 because nothing renders it. Unknown top-level fields and unknown tile keys warn once and are
@@ -159,10 +213,32 @@ ignored. Duplicate JSON keys are not detected — Godot's parser keeps the last 
 }
 ```
 
+The same manifest with one override — everything else keeps the base map (two tile keys, so
+`tiles=1/12`):
+
+```json
+{
+  "version": 1,
+  "name": "Fancy",
+  "tile_size": 16,
+  "tiles": {
+    "stone": "tiles/stone.png",
+    "stone_top": "tiles/stone_top.png"
+  }
+}
+```
+
 A clean load prints one line:
 
 ```
 texpack: using 'Default' (res://texturepacks/default) tile_size=16 tiles=12/12
+```
+
+A pack that also provides override keys prints one extra line, after the success line:
+
+```
+texpack: using 'Fancy' (user://texturepacks/fancy) tile_size=16 tiles=1/12
+texpack: user://texturepacks/fancy: 1/48 per-face overrides
 ```
 
 An unsupported version is never half-loaded:
@@ -259,8 +335,12 @@ them. The raw-bytes path applies to OS and `user://` roots only.
 ## What happens on bad data
 
 `texpack: <source>: <problem> — <consequence>`. Problems go through `GD.PushWarning`, the one
-success line through `GD.Print`. Noise is bounded: at most 12 tile lines + 1 per unknown field +
-1 per discovery source.
+success line through `GD.Print`. Noise is bounded: at most one tile line per provided base key +
+one per provided override key + 1 per unknown field + 1 per discovery source.
+
+Every tile row below applies to a base key and to an override key alike; for an override the
+`<key>` in the message is the `<block>_<face>` name. The failure matrix itself is unchanged: an
+override claims its slot, and a failed read makes that slot's pixels the pack's `missing` tile.
 
 | failure | warn | fallback |
 | --- | --- | --- |
@@ -351,12 +431,14 @@ zero-diff regression baseline; a 1/255 shift will read as a regression.
 
 ### Chosen path and the one fallback
 
-**Chosen: `Texture2DArray`.** Twelve images, one sampler, per-vertex layer index, no UV rects, no
+**Chosen: `Texture2DArray`.** Twelve images for a base-only pack, 60 once any override is used
+(the unused slots hold the `missing` tile), one sampler, per-vertex layer index, no UV rects, no
 atlas packing, no bleeding — a tile is a file.
 
 **Fallback: a single atlas image.** If array sampling ever fails on a target, the loader builds a
-4×4 atlas of the same twelve images and the fragment shader maps `UV2.x` → cell rectangle
-(`cell = floor(vec2(mod(idx,4), floor(idx/4)))`), then samples with `UV/4 + cell/4`. The mesher
+4×4 atlas of the same twelve images — 8×8 when the 60 slots are in use — and the fragment shader
+maps `UV2.x` → cell rectangle (`cell = floor(vec2(mod(idx,G), floor(idx/G)))`), then samples with
+`UV/G + cell/G`, with `G = 4` for a base-only pack and `G = 8` for the 60-slot array. The mesher
 does not change — the index already travels in `UV2.x`. Only the loader's texture build and the
 fragment shader change. `repeat_disable` stays in the fallback too: at a tile's `u == 1.0` a
 repeat sampler would wrap into the neighbouring atlas cell.
@@ -444,3 +526,6 @@ the bundled pack, `--pack=texturepacks/default`. Restart to change packs — v1 
    cutout holes. Upgrade path: two-sided leaves or per-block materials.
 6. **The procedural fallback is quantized** (±1/255), so it is not a zero-diff baseline.
 7. **No hot reload.** A pack change requires a restart.
+8. **Per-face overrides are all-or-nothing in VRAM.** A pack that provides even one override
+   carries the full 60-layer array — 5× the base art — because the fixed override indices leave
+   no room for a partial array.

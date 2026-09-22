@@ -10,9 +10,15 @@ The v1 format is specified in [`docs/texture-packs.md`](../docs/texture-packs.md
 
 ## Pack author quick start
 
-A pack is a directory with a `pack.json` and the PNGs it names. Twelve keys, fixed indices —
-see the spec's completeness table. Every tile is the same `tile_size × tile_size`, RGBA, and
+A pack is a directory with a `pack.json` and the PNGs it names. Twelve base keys, fixed indices
+— see the spec's completeness table. Every tile is the same `tile_size × tile_size`, RGBA, and
 `missing` is the fallback for anything absent or invalid.
+
+Packs may also override individual cube faces with optional `<block>_<suffix>` keys
+(`stone_posx`, `leaves_negz`, …), where `<block>` is a renderable block and `<suffix>` is one of
+`posx, negx, top, bottom, posz, negz`. A pack that names only the twelve base keys is completely
+unaffected; an override's layer is `12 + blockOrdinal*6 + faceIndex`, in the order the spec's
+completeness table lists.
 
 ```json
 {

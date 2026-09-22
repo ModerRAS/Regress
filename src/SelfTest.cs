@@ -198,6 +198,7 @@ public static class SelfTest
 
         // ---- texture pack + mesher texture attributes ---------------------
         CheckTileIndexMap();
+        CheckFaceOverrides();
         CheckResolveTilePath();
         CheckPackLoading();
         CheckMesherTextureArrays(world);
@@ -294,6 +295,104 @@ public static class SelfTest
             "bedrock is covered from the Block enum, not Blocks.Palette");
     }
 
+    private static void CheckFaceOverrides()
+    {
+        string baseDir = ProjectSettings.GlobalizePath("user://texpack_selftest");
+        if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
+
+        // The frozen 48-cell table, rows by Renderable order, cols by Face (PosX..NegZ).
+        int[] frozen =
+        {
+            0, 0, 0, 0, 0, 0,        // Stone
+            1, 1, 1, 1, 1, 1,        // Dirt
+            3, 3, 2, 4, 3, 3,        // Grass: sides, top, bottom
+            5, 5, 5, 5, 5, 5,        // Sand
+            6, 6, 7, 7, 6, 6,        // Wood: top and bottom share the end grain
+            8, 8, 8, 8, 8, 8,        // Plank
+            9, 9, 9, 9, 9, 9,        // Leaves
+            10, 10, 10, 10, 10, 10,  // Bedrock
+        };
+
+        // (a) A base-only pack resolves every cell to the frozen table.
+        string baseOnly = baseDir + "/facebase";
+        WritePack(baseOnly, 1, AllTiles());
+        for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(baseOnly, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
+        var plain = TexPack.Load(baseOnly);
+        int wrong = FrozenMismatches(frozen);
+        Check(plain.Source == baseOnly && plain.FaceOverrides == 0 && plain.Array.GetLayers() == TexPack.KeyCount
+            && wrong == 0,
+            $"base-only pack keeps the frozen 48-cell map in {TexPack.KeyCount} layers ({wrong} wrong)");
+        Check(TexPack.TileIndex(Block.Air, 0) == 11, "Air still resolves to the missing tile (11)");
+
+        // (b) `stone_top` claims cell 2 as layer KeyCount + 2; the other 47 cells hold.
+        string faceOne = baseDir + "/faceone";
+        WritePack(faceOne, 1, AllTiles() + ", \"stone_top\": \"tiles/stone_top.png\"");
+        for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(faceOne, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
+        WriteTile(faceOne, "tiles/stone_top.png", 16, Colors.Red);
+        var over = TexPack.Load(faceOne);
+        wrong = 0;
+        for (int b = 0; b < TexPack.Renderable.Length; b++)
+            for (int f = 0; f < 6; f++)
+                if (TexPack.TileIndex(TexPack.Renderable[b], f)
+                    != (b == 0 && f == Face.Top ? TexPack.KeyCount + 2 : frozen[b * 6 + f])) wrong++;
+        Check(over.Source == faceOne && over.FaceOverrides == 1 && over.Array.GetLayers() == TexPack.LayerCount
+            && wrong == 0 && TexPack.TileIndex(Block.Stone, Face.Top) == TexPack.KeyCount + 2
+            && TexPack.TileIndex(Block.Stone, Face.PosX) == 0 && TexPack.TileIndex(Block.Stone, Face.NegX) == 0
+            && TexPack.TileIndex(Block.Stone, Face.Bottom) == 0 && TexPack.TileIndex(Block.Stone, Face.PosZ) == 0
+            && TexPack.TileIndex(Block.Stone, Face.NegZ) == 0,
+            $"stone_top claims layer {TexPack.KeyCount + 2} in a {TexPack.LayerCount}-layer array ({wrong} wrong)");
+        Check(over.Sources[TexPack.KeyCount + 2] == TexPack.TileSource.Png, "the override layer came from its PNG");
+
+        // (c) A provided override whose PNG is missing still claims the slot, as `missing`.
+        string broken = baseDir + "/facebroken";
+        WritePack(broken, 1, AllTiles() + ", \"stone_top\": \"tiles/gone.png\"");
+        for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(broken, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
+        var brokenPack = TexPack.Load(broken);
+        wrong = 0;
+        for (int f = 0; f < 6; f++)
+            if (f != Face.Top && TexPack.TileIndex(Block.Stone, f) != 0) wrong++;
+        Check(brokenPack.Source == broken && brokenPack.FaceOverrides == 1
+            && TexPack.TileIndex(Block.Stone, Face.Top) == TexPack.KeyCount + 2
+            && brokenPack.Sources[TexPack.KeyCount + 2] == TexPack.TileSource.Missing && wrong == 0,
+            $"a broken override PNG claims its slot as `missing` ({wrong} stone faces changed)");
+
+        // (iv) A rejected (version 2) pack commits nothing: its override never reaches `_resolved`.
+        string future = baseDir + "/facefuture";
+        WritePack(future, 2, AllTiles() + ", \"stone_top\": \"tiles/stone_top.png\"");
+        for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(future, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
+        WriteTile(future, "tiles/stone_top.png", 16, Colors.Red);
+        var rejected = TexPack.Load(future);
+        Check(rejected.Source != future && TexPack.TileIndex(Block.Stone, Face.Top) == 0,
+            $"a rejected pack commits no override (landed on {rejected.Source})");
+
+        // (ii) A later base-only pack is a complete table again: no override survives it.
+        var again = TexPack.Load(baseOnly);
+        wrong = FrozenMismatches(frozen);
+        Check(again.Source == baseOnly && again.FaceOverrides == 0 && again.Array.GetLayers() == TexPack.KeyCount
+            && wrong == 0,
+            $"a later base-only pack clears the override ({wrong} wrong)");
+
+        // (iii) The pack-less fall-through commits the frozen table. Rung 3 is
+        // res://texturepacks/default here; `Procedural()` only wins where it is absent.
+        var fallback = TexPack.Load(baseDir + "/does_not_exist");
+        wrong = FrozenMismatches(frozen);
+        Check((fallback.Procedural || fallback.Source == "res://texturepacks/default")
+            && wrong == 0 && TexPack.TileIndex(Block.Stone, Face.Top) == 0,
+            $"a pack-less fall-through clears the override ({fallback.Source}, {wrong} wrong)");
+
+        if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
+    }
+
+    /// <summary>How many of the 48 (Block,Face) cells disagree with the frozen literal table.</summary>
+    private static int FrozenMismatches(int[] frozen)
+    {
+        int wrong = 0;
+        for (int b = 0; b < TexPack.Renderable.Length; b++)
+            for (int f = 0; f < 6; f++)
+                if (TexPack.TileIndex(TexPack.Renderable[b], f) != frozen[b * 6 + f]) wrong++;
+        return wrong;
+    }
+
     private static void CheckResolveTilePath()
     {
         const string root = "user://texpack_selftest";
@@ -356,11 +455,14 @@ public static class SelfTest
 
         // Unknown key and unknown field are ignored with warnings; the pack still loads.
         string unknown = baseDir + "/unknown";
-        WritePack(unknown, 1, AllTiles() + ", \"gravel\": \"tiles/gravel.png\"", extra: ", \"author\": \"nobody\"");
+        WritePack(unknown, 1,
+            AllTiles() + ", \"gravel\": \"tiles/gravel.png\", \"stone_topx\": \"tiles/stone_topx.png\"",
+            extra: ", \"author\": \"nobody\"");
         for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(unknown, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
         var ignored = TexPack.Load(unknown);
-        Check(ignored.Source == unknown && ignored.Resolved == 12,
-            $"unknown key and unknown field are ignored, the pack still loads ({ignored.Resolved}/12)");
+        Check(ignored.Source == unknown && ignored.Resolved == 12
+            && TexPack.TileIndex(Block.Stone, Face.Top) == 0,
+            $"unknown keys and fields are ignored, the pack still loads ({ignored.Resolved}/12)");
 
         // With no usable `missing` tile, a broken tile takes its own procedural colour.
         string noMissing = baseDir + "/nomissing";

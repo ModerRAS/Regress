@@ -24,6 +24,19 @@ public static class TexPack
 
     private const int Missing = 11;
 
+    /// <summary>The eight renderable blocks in cell order; cell index = block*6 + face.</summary>
+    public static readonly Block[] Renderable =
+        { Block.Stone, Block.Dirt, Block.Grass, Block.Sand, Block.Wood, Block.Plank, Block.Leaves, Block.Bedrock };
+
+    /// <summary>Face-constant suffixes in Face index order (PosX=0 … NegZ=5).</summary>
+    public static readonly string[] FaceSuffix = { "posx", "negx", "top", "bottom", "posz", "negz" };
+
+    /// <summary>Optional per-face override keys; layer = KeyCount + cell.</summary>
+    public static readonly string[] FaceKeys = BuildFaceKeys();
+
+    /// <summary>Array layers the loader may need: 12 base + 48 optional per-face slots.</summary>
+    public static readonly int LayerCount = KeyCount + FaceKeys.Length;
+
     /// <summary>Rung-4 art, authored in sRGB — the sampler's source_color conversion yields linear.</summary>
     private static readonly Color[] FallbackColors =
     {
@@ -44,25 +57,44 @@ public static class TexPack
         public string Source;
         public int Resolved;
         public bool Procedural;
+        public int FaceOverrides;
         public TileSource[] Sources;
     }
 
     /// <summary>
-    /// Frozen Block+Face -> tile index map, over the <see cref="Block"/> enum — never over
-    /// <c>Blocks.Palette</c>, which omits Bedrock even though bedrock is meshed.
+    /// docs/texture-packs.md's 48-cell fallback map, over the <see cref="Block"/> enum — never
+    /// over <c>Blocks.Palette</c>, which omits Bedrock even though bedrock is meshed. Never
+    /// renumbered.
     /// </summary>
-    public static int TileIndex(Block b, int face) => b switch
-    {
-        Block.Stone => 0,
-        Block.Dirt => 1,
-        Block.Grass => face switch { Face.Top => 2, Face.Bottom => 4, _ => 3 },
-        Block.Sand => 5,
-        Block.Wood => face is Face.Top or Face.Bottom ? 7 : 6,
-        Block.Plank => 8,
-        Block.Leaves => 9,
-        Block.Bedrock => 10,
-        _ => Missing, // Air is never meshed; magenta marks anything that slips through
+    private static readonly int[] Frozen = {
+        0, 0, 0, 0, 0, 0,        // Stone
+        1, 1, 1, 1, 1, 1,        // Dirt
+        3, 3, 2, 4, 3, 3,        // Grass: sides, top, bottom
+        5, 5, 5, 5, 5, 5,        // Sand
+        6, 6, 7, 7, 6, 6,        // Wood: top and bottom share the end grain
+        8, 8, 8, 8, 8, 8,        // Plank
+        9, 9, 9, 9, 9, 9,        // Leaves
+        10, 10, 10, 10, 10, 10,  // Bedrock
     };
+
+    /// <summary>The last accepted pack's resolution; the frozen fallback until one loads.</summary>
+    private static int[] _resolved = Frozen;
+
+    /// <summary>Cell for a renderable Block+Face, or -1 for Air / an out-of-range face.</summary>
+    private static int Cell(Block b, int face)
+    {
+        if ((uint)face > 5) return -1;
+        for (int i = 0; i < Renderable.Length; i++)
+            if (Renderable[i] == b) return i * 6 + face;
+        return -1;
+    }
+
+    /// <summary>Frozen Block+Face -> tile layer. Per face: exact override, else the base fallback.</summary>
+    public static int TileIndex(Block b, int face)
+    {
+        int cell = Cell(b, face);
+        return cell < 0 ? Missing : _resolved[cell];
+    }
 
     /// <summary>Runs discovery and prints the one success line. Never returns null.</summary>
     public static Pack Load(string cliPack)
@@ -74,6 +106,8 @@ public static class TexPack
         if (pack == null) pack = Procedural();
 
         GD.Print($"texpack: using '{pack.Name}' ({pack.Source}) tile_size={pack.TileSize} tiles={pack.Resolved}/12");
+        if (pack.FaceOverrides > 0)
+            GD.Print($"texpack: {pack.Source}: {pack.FaceOverrides}/{FaceKeys.Length} per-face overrides");
         return pack;
     }
 
@@ -196,15 +230,29 @@ public static class TexPack
         }
         catch (Exception) { rootFull = System.IO.Path.GetFullPath("."); }
 
-        var images = new Image[KeyCount];
-        var sources = new TileSource[KeyCount];
+        var images = new Image[LayerCount];
+        var sources = new TileSource[LayerCount];
         int resolved = 0;
+        int faceOverrides = 0;
+        int[] table = (int[])Frozen.Clone();
         if (tiles != null)
         {
             foreach (var key in tiles.Keys)
             {
                 string k = key.AsString();
                 int index = Array.IndexOf(Keys, k);
+                bool faceKey = false;
+                if (index < 0)
+                {
+                    int cell = Array.IndexOf(FaceKeys, k);
+                    if (cell >= 0)
+                    {
+                        index = KeyCount + cell;
+                        faceKey = true;
+                        table[index - KeyCount] = index;
+                        faceOverrides++;
+                    }
+                }
                 if (index < 0)
                 {
                     GD.PushWarning($"texpack: {root}: unknown tile key '{k}' — ignored");
@@ -227,14 +275,14 @@ public static class TexPack
                 if (images[index] != null)
                 {
                     sources[index] = TileSource.Png;
-                    resolved++;
+                    if (!faceKey) resolved++;
                 }
             }
         }
 
         // An absent or rejected tile becomes the pack's `missing` tile; with no usable
         // `missing` tile, that one tile becomes its own procedural colour.
-        for (int i = 0; i < KeyCount; i++)
+        for (int i = 0; i < LayerCount; i++)
         {
             if (images[i] != null) continue;
             bool useMissing = i != Missing && images[Missing] != null;
@@ -242,8 +290,11 @@ public static class TexPack
             sources[i] = useMissing ? TileSource.Missing : TileSource.Procedural;
         }
 
+        // A pack that ships no face override keeps today's 12-layer array; choosing any override
+        // costs the full 60 slots, 48 at once — fixed indices are worth 48 unused layers.
+        int layers = faceOverrides > 0 ? LayerCount : KeyCount;
         var list = new Godot.Collections.Array<Image>();
-        for (int i = 0; i < KeyCount; i++) list.Add(images[i]);
+        for (int i = 0; i < layers; i++) list.Add(images[i]);
         var array = new Texture2DArray();
         Error err = array.CreateFromImages(list);
         if (err != Error.Ok || array.GetLayers() == 0)
@@ -252,14 +303,17 @@ public static class TexPack
             return Procedural();
         }
 
+        _resolved = table;
         return new Pack
         {
-            Array = array, TileSize = tileSize, Name = name, Source = root, Resolved = resolved, Sources = sources,
+            Array = array, TileSize = tileSize, Name = name, Source = root, Resolved = resolved,
+            FaceOverrides = faceOverrides, Sources = sources,
         };
     }
 
     private static Pack Procedural()
     {
+        _resolved = Frozen;
         var list = new Godot.Collections.Array<Image>();
         var sources = new TileSource[KeyCount];
         for (int i = 0; i < KeyCount; i++)
@@ -335,6 +389,15 @@ public static class TexPack
     }
 
     // ---- small helpers ---------------------------------------------------
+
+    private static string[] BuildFaceKeys()
+    {
+        var keys = new string[Renderable.Length * FaceSuffix.Length];
+        for (int b = 0; b < Renderable.Length; b++)
+            for (int f = 0; f < FaceSuffix.Length; f++)
+                keys[b * 6 + f] = $"{Renderable[b].ToString().ToLowerInvariant()}_{FaceSuffix[f]}";
+        return keys;
+    }
 
     private static bool IsInt(Variant v) =>
         (v.VariantType == Variant.Type.Float || v.VariantType == Variant.Type.Int)
