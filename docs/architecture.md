@@ -54,8 +54,10 @@ Two component details are deliberate deviations from "keep components blittable"
 - **`ChunkBlocks` holds a `byte[]` reference** rather than an inline fixed buffer. 4096 bytes
   inline would inflate every archetype and copy on every archetype move. Friflo returns
   components by `ref`, so the array is still mutated in place with no copy.
-- **`ChunkVisual` holds Godot node handles** — the only engine-aware component. It is a *handle*,
-  never game state: no system reads gameplay facts out of it.
+- **`ChunkVisual` holds Godot node handles** — an engine-aware component, and not the only one
+  (`PlayerBody` holds the player node and camera; `PlayerIntent.Wish` and `PlayerMining.Target`
+  are engine value types). It is a *handle*, never game state: no system reads gameplay facts out
+  of it.
 
 ## Systems: four chunk systems, four player systems
 
@@ -140,7 +142,8 @@ system, or a component holding the world. `Mine`/`Build` receive the world as a 
 ### What is deliberately not decoupled
 
 - **Godot stays at the edges, not outside.** `ChunkVisual` puts engine handles into the
-  archetype, and `Player.cs` is the only file that reads `Input`. A full Godot/ECS separation
+  archetype, and `PollInput` in `PlayerSystems.cs` is the only place that reads gameplay `Input`
+  (`Player.cs` only toggles mouse capture). A full Godot/ECS separation
   would need a render-entity registry — indirection with no payoff in a single-threaded game.
 - **The world owns both the store and its systems**, and the systems are explicit ordered calls
   rather than `SystemBase` nodes on a scheduler. With three chunk systems whose order *is* their

@@ -87,6 +87,10 @@ jobs:
           mkdir -p build/linux build/windows
           "$HOME/godot/godot" --headless --path . --export-release "Linux" build/linux/Regress.x86_64
           "$HOME/godot/godot" --headless --path . --export-release "Windows Desktop" build/windows/Regress.exe
+          # A missing .sln makes Godot export without publishing the C# assemblies (no data_* dir)
+          # and the exported build segfaults; fail here instead of in the smoke test.
+          test -n "$(find build/linux -name Regress.dll -print -quit)"
+          test -n "$(find build/windows -name Regress.dll -print -quit)"
           ls -R build
 
       - name: Smoke-test exported Linux build
