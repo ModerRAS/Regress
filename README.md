@@ -93,6 +93,7 @@ and the known weaknesses — is in **[docs/architecture.md](docs/architecture.md
 | [docs/architecture.md](docs/architecture.md) | ECS inventory, decoupling rules, archetype state machine, block edit pipeline, deliberate couplings, known weaknesses |
 | [docs/performance.md](docs/performance.md) | how to measure, the numbers, the engine-floor caveat, the two knobs that bound frame time |
 | [docs/roadmap.md](docs/roadmap.md) | unlimited dimensions, tools and drops, why per-world parallel tick is the wrong axis |
+| [docs/texture-packs.md](docs/texture-packs.md) | texture pack format: twelve tile keys, `pack.json`, path-traversal rules, discovery rungs, failure matrix, non-goals |
 
 ## Performance in one paragraph
 
