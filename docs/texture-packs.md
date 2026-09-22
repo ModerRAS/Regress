@@ -424,13 +424,15 @@ the bundled pack, `--pack=texturepacks/default`. Restart to change packs — v1 
 
 ## Known weaknesses
 
-1. **Exported builds are smoke-tested, not pixel-tested.** The release workflow exports a Linux
-   build and runs `--selftest` headless inside it, asserting
-   `texpack: using 'Default' (res://texturepacks/default) tile_size=16 tiles=12/12`: the bundled
-   `.import` files and all twelve lossless tiles (`compress/mode=0`) survive the export and load
-   back as 16×16 images. What is still unverified is pixel content — the check proves the images
-   load at the right size, not that their pixels match the generator. Upgrade path: assert one
-   known pixel per tile in `SelfTest`, then assert that too in the release workflow.
+1. **Exported builds are smoke-tested, not pixel-tested.** Since 2026-09-22 the release workflow
+   exports a Linux build and runs `--selftest` headless inside it, asserting
+   `texpack: using 'Default' (res://texturepacks/default) tile_size=16 tiles=12/12` and
+   `SELFTEST PASS` (run: https://github.com/ModerRAS/Regress/actions/runs/35738397514). The PCK
+   ships each tile as `res://.godot/imported/<tile>.png-<hash>.ctex` plus its `.import`
+   companion, and those imports are lossless (`compress/mode=0`). That proves the twelve tiles
+   load back as 16×16 images in the export; it says nothing about pixel content or a GPU render,
+   so an importer-changed pixel would still pass. Upgrade path: assert one known pixel per tile
+   in `SelfTest`, then assert that in the release workflow too.
 2. **Duplicate JSON keys are undetected.** Godot's parser keeps the last occurrence; four fields
    do not justify a second parser.
 3. **Symlinks are not resolved** — the trust boundary is lexical.
