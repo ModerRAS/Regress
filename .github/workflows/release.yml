@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag (e.g. v0.1.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run the whole release path but do not publish'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  GODOT_VERSION: 4.7.2
+  GODOT_STATUS: stable
+  GODOT_TEMPLATE_VERSION: 4.7.2.stable.mono
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+          cache: true
+          cache-dependency-path: Regress.csproj
+
+      - name: Cache Godot mono editor
+        uses: actions/cache@v4
+        with:
+          path: ~/godot
+          key: godot-${{ env.GODOT_VERSION }}-${{ env.GODOT_STATUS }}-mono-linux
+
+      - name: Cache Godot export templates
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/godot/export_templates
+          key: godot-templates-${{ env.GODOT_VERSION }}-${{ env.GODOT_STATUS }}-mono
+
+      - name: Install Godot mono editor and export templates
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/godot"
+          if [ ! -x "$HOME/godot/godot" ]; then
+            URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_STATUS}/Godot_v${GODOT_VERSION}-${GODOT_STATUS}_mono_linux_x86_64.zip"
+            curl -fL --retry 3 -o /tmp/godot.zip "$URL"
+            unzip -q -o /tmp/godot.zip -d "$HOME/godot"
+            BIN=$(find "$HOME/godot" -maxdepth 3 -type f -name 'Godot_v*_mono_linux.x86_64' -print -quit)
+            test -n "$BIN"
+            chmod +x "$BIN"
+            ln -sf "$BIN" "$HOME/godot/godot"
+          fi
+          TPL_DIR="$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_VERSION}"
+          if [ ! -f "$TPL_DIR/linux_release.x86_64" ]; then
+            URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_STATUS}/Godot_v${GODOT_VERSION}-${GODOT_STATUS}_mono_export_templates.tpz"
+            curl -fL --retry 3 -o /tmp/templates.tpz "$URL"
+            rm -rf /tmp/templates
+            unzip -q -o /tmp/templates.tpz -d /tmp/templates
+            mkdir -p "$TPL_DIR"
+            mv /tmp/templates/templates/* "$TPL_DIR/"
+          fi
+          "$HOME/godot/godot" --version
+          ls "$TPL_DIR/linux_release.x86_64" "$TPL_DIR/windows_release_x86_64.exe"
+
+      - name: Build
+        run: dotnet build
+
+      - name: Import project
+        run: "$HOME/godot/godot" --headless --path . --import
+
+      - name: Export Linux and Windows
+        run: |
+          set -euo pipefail
+          mkdir -p build/linux build/windows
+          "$HOME/godot/godot" --headless --path . --export-release "Linux" build/linux/Regress.x86_64
+          "$HOME/godot/godot" --headless --path . --export-release "Windows Desktop" build/windows/Regress.exe
+          ls -R build
+
+      - name: Smoke-test exported Linux build
+        run: |
+          set -o pipefail
+          chmod +x build/linux/Regress.x86_64
+          ./build/linux/Regress.x86_64 --headless -- --selftest 2>&1 | tee build/smoke.log
+          grep -q 'SELFTEST PASS' build/smoke.log
+          grep -q "texpack: using 'Default' (res://texturepacks/default) tile_size=16 tiles=12/12" build/smoke.log
+
+      - name: Package artifacts
+        run: |
+          set -euo pipefail
+          cd build
+          zip -qr Regress-linux-x86_64.zip linux
+          zip -qr Regress-windows-x86_64.zip windows
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version != '' && inputs.version || github.ref_name }}
+          name: ${{ inputs.version != '' && inputs.version || github.ref_name }}
+          dry_run: ${{ inputs.dry_run == true }}
+          files: build/Regress-*.zip
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

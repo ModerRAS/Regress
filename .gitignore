@@ -23,3 +23,6 @@ obj/
 
 # Local agent state
 .pi/
+
+# Godot export output (build/linux, build/windows)
+build/

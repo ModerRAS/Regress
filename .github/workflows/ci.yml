@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  GODOT_VERSION: 4.7.2
+  GODOT_STATUS: stable
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+          cache: true
+          cache-dependency-path: Regress.csproj
+
+      - name: Cache Godot mono editor
+        uses: actions/cache@v4
+        with:
+          path: ~/godot
+          key: godot-${{ env.GODOT_VERSION }}-${{ env.GODOT_STATUS }}-mono-linux
+
+      - name: Install Godot mono editor
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/godot"
+          if [ ! -x "$HOME/godot/godot" ]; then
+            URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_STATUS}/Godot_v${GODOT_VERSION}-${GODOT_STATUS}_mono_linux_x86_64.zip"
+            curl -fL --retry 3 -o /tmp/godot.zip "$URL"
+            unzip -q -o /tmp/godot.zip -d "$HOME/godot"
+            BIN=$(find "$HOME/godot" -maxdepth 3 -type f -name 'Godot_v*_mono_linux.x86_64' -print -quit)
+            test -n "$BIN"
+            chmod +x "$BIN"
+            ln -sf "$BIN" "$HOME/godot/godot"
+          fi
+          "$HOME/godot/godot" --version
+
+      - name: Build
+        run: dotnet build
+
+      - name: Self-test (headless)
+        run: |
+          set -o pipefail
+          "$HOME/godot/godot" --headless --path . --import
+          "$HOME/godot/godot" --headless --path . -- --selftest 2>&1 | tee selftest.log
+          grep -q 'SELFTEST PASS' selftest.log
+
+      - name: Texture-pack completeness (docs/texture-packs.md)
+        run: python tools/check_completeness.py --table docs/texture-packs.md
+
+      - name: Art reproducibility
+        run: |
+          python tools/gen_default_pack.py
+          git diff --exit-code -- texturepacks/default/tiles

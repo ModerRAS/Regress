@@ -1,5 +1,7 @@
 # Regress
 
+[![CI](https://github.com/ModerRAS/Regress/actions/workflows/ci.yml/badge.svg)](https://github.com/ModerRAS/Regress/actions/workflows/ci.yml)
+
 A Minecraft-like voxel sandbox in C# on **Godot 4.7 (.NET)**, architected as an **ECS**
 ([Friflo.Engine.ECS](https://github.com/friflo/Friflo.Engine.ECS)).
 
@@ -23,6 +25,21 @@ godot-mono --path . -- --demo                  # scripted walk + build + mine-do
 godot-mono --path . -- --bench                 # performance run with per-system breakdown
 godot-mono --path . -- --shot=out.png          # render one frame to a PNG and quit
 ```
+
+## Releases
+
+Tag a commit and `.github/workflows/release.yml` builds the Linux and Windows exports, smoke-tests
+the Linux build headless, and attaches `Regress-linux-x86_64.zip` and `Regress-windows-x86_64.zip`
+to the GitHub Release:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+To exercise the whole path without publishing anything, run the workflow manually
+(Actions → Release → Run workflow) with `dry_run: true`; the build, export and smoke test run for
+real, the release is not created.
 
 ## Controls
 
