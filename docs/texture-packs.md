@@ -619,6 +619,13 @@ the bundled pack, `--pack=texturepacks/default`. Restart to change packs — v1 
    normalisation moved 1.09% of the pixels of a sky-like frame (27.88% of the frame) and 69.58%
    of a vegetation-like frame (59.97% of the frame), mean per-pixel |Δ| ≈ 19/255. Any
    render/pixel-level baseline captured before this change is void (this weakness).
+10. **`.import` files are Godot-owned, not generator-owned.** `tools/gen_default_pack.py --imports`
+   writes the bootstrap form without `uid=`; Godot's importer adds the uid and preserves it on
+   later imports, so the committed canonical form is Godot's post-import output. After adding or
+   renaming a tile, run `godot-mono --headless --path . --import` once and commit the result;
+   never synthesize a uid. The six heartwood tiles were once committed uid-less, which made CI's
+   Art reproducibility step (`--import` then `git diff --exit-code -- texturepacks/default/tiles`)
+   fail deterministically (run 35847646298); fix commit 681c305 pinned Godot's uids.
 
 ## Texture variants (string or array)
 
