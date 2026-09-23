@@ -29,7 +29,8 @@ public partial class Game : Node3D
 	private int _digStartLayer;
 	private int _digLayers;
 	private int _digBreaks;
-	private int _digFallFrame;
+	private float _digLowestY;
+	private int _digFallFrame, _digClearedFrame, _digFallStopFrame;
 	// Dig window 252 -> 2400 (2148 frames, ~14.8 s at the measured ~145 process fps); report at
 	// 2450. Two lower bounds, and they are NOT added serially -- the descent overlaps the digging:
 	//   break bound   = 1440 breaks / measured 0.67 breaks per frame ~= 2150 frames if applied one
@@ -339,7 +340,8 @@ public partial class Game : Node3D
 		GD.Print($"digdown: sank {depth:F1} blocks to y={Player.GlobalPosition.Y:F1}, "
 			+ $"onFloor={standing}, aboveBedrock={aboveBedrock}, chunks={World.LoadedChunks}");
 		GD.Print($"digdown: excavated layers={_digLayers} (need {DigLayersTarget}), breaks={_digBreaks} "
-			+ $"(expect ~{_digLayers * 36}), frames={_frames - 252}, depth={depth:F1} (need >= layers-1)");
+			+ $"(expect ~{_digLayers * 36}), frames={_frames - 252}, depth={depth:F1} (need >= layers-1), "
+			+ $"descent ended at frame={_digFallStopFrame} (fall started at {_digFallFrame})");
 		GD.Print(pass
 			? $"DIGDOWN PASS column=({_digColumnX},{_digColumnZ}) run={_digRun} layers={_digLayers} sank={depth:F1}"
 			: $"DIGDOWN FAIL column=({_digColumnX},{_digColumnZ}) run={_digRun} layers={_digLayers} sank={depth:F1} "
@@ -487,6 +489,13 @@ public partial class Game : Node3D
 			_digFallFrame = _frames;
 			GD.Print($"digdown: fall started at frame={_frames} vel={Player.Velocity}");
 		}
+		// Descent trace: the frame the body last changed height. The report prints it, so a FAIL
+		// names how the window was spent (dig frames vs fall frames) instead of guessing.
+		if (Mathf.Abs(Player.GlobalPosition.Y - _digLowestY) > 1e-4f)
+		{
+			_digLowestY = Player.GlobalPosition.Y;
+			_digFallStopFrame = _frames;
+		}
 	}
 
 	/// <summary>True when every section the shaft crosses carries the new collision. The shaft
@@ -538,6 +547,11 @@ public partial class Game : Node3D
 	private void UpdateDigLayers()
 	{
 		while (_digLayers < 128 && LayerCleared(_digStartLayer - _digLayers)) _digLayers++;
+		if (_digClearedFrame == 0 && _digLayers >= DigLayersTarget)
+		{
+			_digClearedFrame = _frames;
+			GD.Print($"digdown: shaft cleared to {_digLayers} layers at frame={_frames}");
+		}
 		// Actual applied breaks: the fully cleared layers plus the partial layer being dug.
 		// breaks ~= 25 x layers is the evidence that no queued cell was wasted on air.
 		int partial = 0;
@@ -587,6 +601,17 @@ public partial class Game : Node3D
 		float clearZ = Mathf.Min(feet.Z - 2f - (_digShaftZ - 2), (_digShaftZ + 4) - (feet.Z + 2f));
 		GD.Print($"digdown: supportLayer={layer} solidCells={solidCells}/36 solids:{solids} "
 			+ $"wallClearance={Mathf.Min(clearX, clearZ):F2} (capsule radius 2)");
+		// What the physics engine is really touching. This gate fails with onFloor=true while the
+		// footprint scan below the body says air, so print the real contact list (position +
+		// normal + collider) instead of inferring a surface from the block data.
+		int contacts = Player.GetSlideCollisionCount();
+		string contactText = "";
+		for (int i = 0; i < contacts; i++)
+		{
+			var c = Player.GetSlideCollision(i);
+			contactText += $" #{i} pos={c.GetPosition()} normal={c.GetNormal()} collider={c.GetCollider()?.GetType().Name}";
+		}
+		GD.Print($"digdown: contacts={contacts}{contactText}");
 		if (World.TryGetChunk(fx, fy, fz, out var ce))
 		{
 			var cc = ce.GetComponent<ChunkCoord>();
