@@ -12,11 +12,13 @@ public static class MobSystems
 {
 	public const int MaxMobs = 48;
 	public const int MobsPerFrame = 2;
-	public const double MobWorkBudgetMs = 1.0;
-	public const float DespawnRadius = 56f;
+	/// <summary>Per-frame mob work cap in ms. Mutable so the selftest can lift the wall-clock
+	/// throttle and compare two worlds deterministically; the game keeps the 1 ms default.</summary>
+	public static double MobWorkBudgetMs = 1.0;
+	public const float DespawnRadius = 224f;
 
-	private const float Gravity = 26f;
-	private const float MaxDepenetration = 8f;
+	private const float Gravity = 104f;
+	private const float MaxDepenetration = 32f;
 
 	/// <summary>Create up to MobsPerFrame mobs and drop out-of-range ones. Returns ms spent.</summary>
 	public static double Spawn(VoxelWorld world) => MobSpawner.Run(world);
@@ -79,10 +81,10 @@ public static class MobSystems
 			position.X = nextX;
 			position.Z = nextZ;
 		}
-		else if (move.StepUp && MobAiRules.MobFits(world, nextX, position.Y + 1f, nextZ))
+		else if (move.StepUp && MobAiRules.MobFits(world, nextX, position.Y + 4f, nextZ))
 		{
 			position.X = nextX;
-			position.Y += 1f;
+			position.Y += 4f;
 			position.Z = nextZ;
 		}
 		else

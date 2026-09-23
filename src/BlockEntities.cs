@@ -27,7 +27,7 @@ public struct Interactable : IComponent
 }
 
 /// <summary>Per-instance state of a Toggle interactive block. Lives on the entity, never in the
-/// 4096-byte chunk arrays: instance state is per block, not per cell byte.</summary>
+/// ChunkSize³-byte chunk arrays (262144 bytes): instance state is per block, not per cell byte.</summary>
 public struct ToggleState : IComponent
 {
 	public bool Open;

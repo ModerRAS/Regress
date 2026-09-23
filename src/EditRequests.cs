@@ -108,56 +108,65 @@ public static class BlockBehaviors
 		return snapped;
 	}
 
-	public const int MaxBlocksPerBreak = 256;
-	private const int FellRadius = 5;
+	/// <summary>Bound on one fell: the largest tree the generator can stamp. Contains accepts
+	/// exactly the stamped volume, so this is a hard cap, not a margin. In production it is a
+	/// silent-truncation safety valve; correctness ("collected == the spec's volume") is owned by
+	/// the SelfTest assertions, never by this cap.</summary>
+	public static readonly int MaxBlocksPerBreak = TerrainGenerator.MaxTreeBlocks();
 
-	private static readonly Vector3I[] Directions =
-	{
-		new(1, 0, 0), new(-1, 0, 0), new(0, 1, 0), new(0, -1, 0), new(0, 0, 1), new(0, 0, -1),
-	};
+	/// <summary>Derived reach of one tree from any of its cells: MaxTreeHeight plus a margin.
+	/// The spec decides the fell now; this is only a safety recheck, never the decision.</summary>
+	private const int FellRadius = TerrainGenerator.MaxTreeHeight + 2;
 
-	// ponytail: reused scratch buffers, so the returned list is only valid until the next call.
+	// ponytail: reused scratch buffer, so the returned list is only valid until the next call.
 	[System.ThreadStatic] private static List<Vector3I> _found;
-	[System.ThreadStatic] private static HashSet<Vector3I> _seen;
 
 	/// <summary>Blocks removed by breaking <paramref name="cell"/>.</summary>
 	public static List<Vector3I> Collect(VoxelWorld world, Block block, Vector3I cell)
 	{
 		var found = _found ??= new List<Vector3I>(64);
-		var seen = _seen ??= new HashSet<Vector3I>();
 		found.Clear();
-		seen.Clear();
 		found.Add(cell);
-		seen.Add(cell);
 
-		if (block == Block.Wood) FellTree(world, cell, found, seen);
+		// Tree identity comes from the generator spec, never from the block type: a player's
+		// wood house is not a tree and breaks one cell at a time. Structures the world
+		// generates as "one thing" are aligned through such a spec (pure function, zero
+		// storage) rather than a per-voxel source tag; trees are the first example.
+		if (block == Block.Wood || block == Block.Leaves) FellTree(world, cell, found);
 		// Vein mining, leaf decay, falling sand: more cases here.
 		return found;
 	}
 
-	/// <summary>Chop the trunk and take the canopy with it, bounded by radius and block count.</summary>
-	private static void FellTree(VoxelWorld world, Vector3I origin, List<Vector3I> found, HashSet<Vector3I> seen)
+	/// <summary>Collect the generated tree that owns this cell, if any (see
+	/// <see cref="TerrainGenerator.TryGetTreeAt"/>): every spec cell that is currently Wood
+	/// or Leaves is collected. Cells no spec contains are left as a single break. A player
+	/// block placed inside a tree's own volume is indistinguishable from a generated one and
+	/// falls with it; a per-tree ECS entity would be the upgrade path if trees ever need
+	/// their own state.</summary>
+	private static void FellTree(VoxelWorld world, Vector3I origin, List<Vector3I> found)
 	{
-		var queue = new Queue<Vector3I>();
-		queue.Enqueue(origin);
+		if (!world.Terrain.TryGetTreeAt(origin.X, origin.Y, origin.Z, out var spec)) return;
 
-		while (queue.Count > 0)
+		int reach = TerrainGenerator.CanopyMaxRadius;
+		int top = spec.MinY + TerrainGenerator.MaxTreeHeight;
+		for (int y = spec.MinY; y <= top; y++)
 		{
-			var cell = queue.Dequeue();
-			foreach (var d in Directions)
+			for (int z = spec.AnchorZ - reach; z <= spec.AnchorZ + reach; z++)
 			{
-				var next = cell + d;
-				if (Mathf.Abs(next.X - origin.X) > FellRadius
-					|| Mathf.Abs(next.Y - origin.Y) > FellRadius
-					|| Mathf.Abs(next.Z - origin.Z) > FellRadius) continue;
-				if (!seen.Add(next)) continue;
+				for (int x = spec.AnchorX - reach; x <= spec.AnchorX + reach; x++)
+				{
+					if (x == origin.X && y == origin.Y && z == origin.Z) continue; // already in found
+					// Safety recheck only: a spec cell is never this far from the hit cell.
+					if (Mathf.Abs(x - origin.X) > FellRadius
+						|| Mathf.Abs(y - origin.Y) > FellRadius
+						|| Mathf.Abs(z - origin.Z) > FellRadius) continue;
+					if (!TerrainGenerator.Contains(spec, x, y, z)) continue;
 
-				var b = world.GetBlock(next.X, next.Y, next.Z);
-				if (b != Block.Wood && b != Block.Leaves) continue;
-
-				found.Add(next);
-				if (found.Count >= MaxBlocksPerBreak) return;
-				if (b == Block.Wood) queue.Enqueue(next); // only wood continues the trunk
+					var b = world.GetBlock(x, y, z);
+					if (b != Block.Wood && b != Block.Leaves) continue;
+					found.Add(new Vector3I(x, y, z));
+					if (found.Count >= MaxBlocksPerBreak) return;
+				}
 			}
 		}
 	}
