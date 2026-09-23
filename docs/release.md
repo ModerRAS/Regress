@@ -91,6 +91,24 @@ The mono template pack does contain the iOS template. The jobs still print the w
 directory and fail with `TEMPLATE GAP: ios.zip missing` if it ever disappears; this is
 reported, never skipped silently.
 
+## Measured green run (`desktop-android`, run 35837339941)
+
+Wall clock 08:28:48 → 08:31:01 (~2 min 13 s). The smoke test hit both expected lines:
+`SELFTEST PASS` and `texpack: using 'Default' (res://texturepacks/default) tile_size=16 tiles=12/12`.
+
+```
+Regress-linux-x86_64.zip      65,547,770 B
+Regress-windows-x86_64.zip    75,241,548 B
+Regress-android.apk          180,408,998 B
+Regress-desktop-android.zip  246,607,208 B   (uploaded bundle)
+```
+
+The macOS export in the same run succeeded (`[ DONE ] export`, `build/macos/Regress.zip`); the
+apple job ran 08:28:50 → 08:30:35 including the iOS step that failed on the missing Team ID.
+
+ETC2 change vs desktop artifact size: **not measured** — no earlier run reached packaging, so
+there is no baseline to compare against.
+
 ## Jobs
 
 ### `desktop-android` (ubuntu-latest)
@@ -111,8 +129,22 @@ dotnet build
 ./build/linux/Regress.x86_64 --headless -- --selftest   # grep: SELFTEST PASS + texpack line
 ```
 
-Android uses the normal template export (`gradle_build/use_gradle_build=false`) and a throwaway
-debug keystore generated on the runner:
+Android uses the normal template export (`gradle_build/use_gradle_build=false`). The APK is
+signed with the debug keystore **Godot generates on the ephemeral runner**, not with the
+workflow's own keytool step: `_create_editor_debug_keystore_if_needed()`
+(`platform/android/export/export_plugin.cpp` @ `4.7.2-stable` lines 927-983) writes
+`~/.local/share/godot/keystores/debug.keystore` using keytool
+`-dname "cn=Godot, ou=Godot Engine, o=Stichting Godot, c=NL"` (alias `androiddebugkey`,
+store/key password `android`). Run 35837339941 measured the APK signer as `CN=Godot, OU=Godot
+Engine, O=Stichting Godot, C=NL`, SHA-256
+`91:3F:DA:7E:64:DB:68:5D:00:94:1D:9D:6E:A0:5D:BE:97:52:66:3A:5F:3A:15:C5:6A:65:01:A8:4F:BC:F3:19`,
+matching the keystore's `androiddebugkey`. The key is random per run, never committed, and is
+**not** a production signing key. Evidence: `keytool -printcert -jarfile` /
+`apksigner verify --print-certs`.
+
+The workflow's `keytool -genkeypair` step is only a **fallback** (it runs after `--import`, so on
+the green run the file already existed and its `[ ! -f ]` guard skipped it; its
+`-dname "CN=Android Debug,O=Android,C=US"` is not the DN that signed the APK):
 
 ```sh
 keytool -genkeypair -keystore "$HOME/.local/share/godot/keystores/debug.keystore" \
@@ -122,17 +154,12 @@ keytool -genkeypair -keystore "$HOME/.local/share/godot/keystores/debug.keystore
 
 A minimal `~/.config/godot/editor_settings-4.tres` (and `editor_settings-4.7.tres`) points
 `export/android/debug_keystore`, `export/android/android_sdk_path` and
-`export/android/java_sdk_path` at absolute runner paths. The APK signer is printed with
-`keytool -printcert -jarfile build/android/Regress.apk` and
-`apksigner verify --print-certs build/android/Regress.apk`.
-
-The release APK is signed with the same throwaway CI keystore, injected through
-`GODOT_ANDROID_KEYSTORE_RELEASE_PATH` / `_USER` / `_PASSWORD` because `sign_apk()`'s release
-branch reads only `keystore/release` or those env vars and never falls back to the debug keystore
-(`platform/android/export/export_plugin.cpp` @ `4.7.2-stable` lines 1761-1767 and 3333-3349; env
-names in `export_plugin.h:50-52`). `preset.3` keeps `keystore/release` empty. It is not a
-production signing key; the evidence is `keytool -printcert -jarfile` /
-`apksigner verify --print-certs` in the job log.
+`export/android/java_sdk_path` at absolute runner paths. The release APK is signed with the same
+Godot-generated debug keystore via `GODOT_ANDROID_KEYSTORE_RELEASE_PATH` / `_USER` /
+`_PASSWORD`, because `sign_apk()`'s release branch reads only `keystore/release` or those env
+vars and never falls back to the debug keystore
+(`platform/android/export/export_plugin.cpp` @ `4.7.2-stable` lines 1761-1767, 3333-3349; env
+names in `export_plugin.h:50-52`). `preset.3` keeps `keystore/release` empty.
 
 Gradle builds were evaluated and deliberately not used: they would require installing the
 Android build template (`ExportTemplateManager::get_android_build_directory` →
@@ -146,7 +173,7 @@ Artifacts (bundle `Regress-desktop-android`): `Regress-linux-x86_64.zip`,
 ### `apple` (macos-latest)
 
 Installs: .NET 9 SDK, Godot `4.7.2-stable` mono macOS universal editor
-(`~/godot/Godot_mono.app/Contents/MacOS/Godot`, symlinked as `~/godot/godot`), templates into
+(`~/godot/Godot_mono.app/Contents/MacOS/Godot`, resolved as `$GODOT_BIN` — no symlink), templates into
 `~/Library/Application Support/Godot/export_templates/4.7.2.stable.mono`, plus the runner's
 preinstalled Xcode.
 
@@ -154,9 +181,9 @@ Commands:
 
 ```sh
 dotnet build
-"$HOME/godot/godot" --headless --path . --import
-"$HOME/godot/godot" --headless --path . --export-release "macOS" build/macos/Regress.zip
-"$HOME/godot/godot" --headless --path . --export-release "iOS"   build/ios/Regress.ipa
+"$GODOT_BIN" --headless --path . --import
+"$GODOT_BIN" --headless --path . --export-release "macOS" build/macos/Regress.zip
+"$GODOT_BIN" --headless --path . --export-release "iOS"   build/ios/Regress.ipa
 unzip -q build/macos/Regress.zip -d "$RUNNER_TEMP/macos_app"
 lipo -archs "$(find "$RUNNER_TEMP/macos_app" -type f -path '*/Contents/MacOS/*' -print -quit)"
 xcodebuild -project <found.xcodeproj> -scheme <first scheme> -sdk iphoneos -configuration Release \
@@ -165,11 +192,11 @@ xcodebuild -project <found.xcodeproj> -scheme <first scheme> -sdk iphoneos -conf
   -derivedDataPath /tmp/iosdd build
 ```
 
-macOS `--import` hung twice with no progress (the same import takes ~3 seconds on the ubuntu
-job), so the apple job now resolves the editor binary explicitly (`GODOT_BIN` from the extracted
-`Godot_mono.app`, no symlink) and runs the import under a 300-second watchdog that prints
-`ps -ef`, the import log and Godot's own log before failing. Root cause still unknown; the next
-run provides the evidence.
+macOS `--import` hung twice with no progress under the old `~/godot/godot` symlink (no output
+for ≥15 minutes after the banner). With the explicit `$GODOT_BIN` path (no symlink) it completed
+in ~60 s on run 35837339941. The root cause is not settled, but the fix is effective; the
+300-second watchdog (which prints `ps -ef`, the import log and Godot's own log before failing)
+stays in place.
 
 The workflow prints the actual `build/ios` shape before packaging and zips whatever exists
 (project directory if the export produced one, otherwise the export tree). `lipo` evidence is
@@ -191,12 +218,17 @@ release API).
 - CI proves the exports completed and the artifacts exist and are non-empty (byte floors are
   checked). It does **not** prove the builds run on a phone, tablet or desktop, and it does
   **not** prove the APK/IPA can be installed.
-- Android is signed with a throwaway CI debug keystore (alias `androiddebugkey`, password
-  `android`, `CN=Android Debug`). It is **not** a production signing key and must not be used
-  for a distributed build.
-- iOS is an **unsigned Xcode project** (`application/export_project_only=true`). Whether Xcode
-  can build it is exactly what `IOS_XCODEBUILD_PROBE` says: `PASS` = buildable but unsigned;
-  `FAIL` or not run = buildability not verified. Never claim it "should build".
+- Android is signed with the debug keystore Godot generates on the runner (alias
+  `androiddebugkey`, password `android`, DN `CN=Godot, OU=Godot Engine, O=Stichting Godot,
+  C=NL`; random per run). It is **not** a production signing key and must not be used for a
+  distributed build.
+- iOS is an **unsigned Xcode project** (`application/export_project_only=true`). The preset
+  carries the placeholder `application/app_store_team_id="XXXXXXXXXX"` because the export gate
+  requires a non-empty Team ID (`editor/export/editor_export_platform_apple_embedded.cpp`
+  @ `4.7.2-stable` lines 178-181 and 1674-1675) and we have no Apple credentials; a user must
+  replace it with their own team id to sign/build. Whether Xcode can build it is exactly what
+  `IOS_XCODEBUILD_PROBE` says: `PASS` = buildable but unsigned; `FAIL` or not run = buildability
+  not verified (**it has not run yet**). Never claim it "should build".
 - macOS/Windows/Linux artifacts are unsigned and not notarized.
 - macOS architecture: `MACOS_ARCHES=<lipo -archs>` is the evidence. The preset requests
   `binary_format/architecture="universal"`, but only `lipo` shows what the template really
@@ -209,11 +241,13 @@ release API).
   `export/android/debug_keystore` path, which is the same file).
 - The real shape of the iOS project-only export (`build/ios/...`); the workflow prints it and
   packages whichever shape appears.
-- Whether the iOS export under net9.0 passes (the Apple plugin has no TFM check; the publish
-  step and Xcode are the remaining unknowns).
+- Whether the iOS export completes with the placeholder Team ID: run 35837339941 failed at the
+  `App Store Team ID not specified` gate (`editor_export_platform_apple_embedded.cpp` lines
+  178-181, 1674-1675), not on .NET; the next run decides.
 - Whether `dotnet publish -r ios-arm64` / `-r android-arm64` needs `dotnet workload install`
   (NETSDK1147); Godot docs do not mention it, so the job only prints `dotnet --info` /
   `dotnet workload list`.
-- Whether `keytool -printcert -jarfile` can read the APK (v1/JAR signature); `apksigner
-  verify --print-certs` is the v2/v3 fallback and fails loudly if the APK is unsigned.
+- `keytool -printcert -jarfile` / `apksigner verify --print-certs` were verified in run
+  35837339941 (signer DN and SHA-256 above); `apksigner` remains the loud failure if the APK is
+  unsigned.
 - `MACOS_ARCHES` and `IOS_XCODEBUILD_PROBE` results, and the first five-platform green run.
