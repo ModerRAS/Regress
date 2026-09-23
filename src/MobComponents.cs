@@ -16,7 +16,7 @@ public static class MobKinds
 {
 	public static float HalfWidth(MobKind kind) => MobAiRules.HalfWidth;
 	public static float Height(MobKind kind) => MobAiRules.Height;
-	public static float Speed(MobKind kind) => 3.0f;
+	public static float Speed(MobKind kind) => 12.0f;
 }
 
 /// <summary>Feet-centre position + yaw. The visual node is offset to the AABB centre.</summary>

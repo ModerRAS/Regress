@@ -8,12 +8,14 @@ namespace Regress;
 /// <summary>
 /// Owns the ECS store and the chunk systems. A chunk is an entity whose archetype encodes
 /// its lifecycle: NeedsMesh, then NeedsCollision, then neither (complete, resident).
-/// Systems query those archetypes and are budgeted in milliseconds so no frame can spin
-/// on an arbitrary number of variable-cost chunks.
+/// Systems query those archetypes and work one section at a time under a shared millisecond
+/// budget, so no frame can spin on an arbitrary number of variable-cost sections.
 /// </summary>
 public partial class VoxelWorld : Node3D, IBlockReader
 {
-	public const int ChunkSize = 16;
+	public const int ChunkSize = 64;
+	public const int SectionSize = 16;
+	public const int SectionsPerAxis = ChunkSize / SectionSize;
 
 	public EntityStore Store { get; } = new();
 
@@ -25,10 +27,10 @@ public partial class VoxelWorld : Node3D, IBlockReader
 	public int BedrockY => Terrain.BedrockY;
 
 	public int HeightAt(int wx, int wz) => Terrain.HeightAt(wx, wz);
-	public int ViewDistance = 5;          // chunks, horizontally
-	public int CollisionRadius = 2;       // chunks, in 3D around the player
+	public int ViewDistance = 3;          // chunks, horizontally
+	public int CollisionRadius = 2;       // sections, in 3D around the player's section
 	public int ChunkWorkBudgetMs = 3;
-	public int ChunksPerFrame = 4;
+	public int ChunksPerFrame = 4;        // hard cap per frame; the 3 ms deadline usually bites first
 	public Vector3 Focus;
 
 	// Mob spawn plan cursor for the current focus cell; MobSpawner.Plan itself is pure.
@@ -36,7 +38,7 @@ public partial class VoxelWorld : Node3D, IBlockReader
 	internal int MobFocusX = int.MinValue;
 	internal int MobFocusZ = int.MinValue;
 
-	// Timings for --bench.
+	// Timings for --bench. Gen* counts chunks; Mesh* and Collision* count SECTIONS.
 	public double GenMsTotal { get; private set; }
 	public double GenMsMax { get; private set; }
 	public int GenCount { get; private set; }
@@ -46,8 +48,8 @@ public partial class VoxelWorld : Node3D, IBlockReader
 	public double CollisionMsTotal { get; private set; }
 	public double CollisionMsMax { get; private set; }
 	public long CollisionAllocBytes { get; private set; }
-	public int MeshCount { get; private set; }
-	public int CollisionCount { get; private set; }
+	public int MeshCount { get; private set; }      // sections
+	public int CollisionCount { get; private set; } // sections
 
 	// One shared material for every chunk: the tile texture is the base colour and vertex
 	// colour is tint only. TexPack.Load injects the tile array once at startup, so the
@@ -113,6 +115,7 @@ public partial class VoxelWorld : Node3D, IBlockReader
 	private readonly List<Vector3I> _pending = new();
 
 	private Vector3I _lastFocus = new(int.MinValue, int.MinValue, int.MinValue);
+	private Vector3I _lastPlayerSection = new(int.MinValue, int.MinValue, int.MinValue);
 	private int _pendingCursor;
 	private double _meshWorkMs;
 	private double _colWorkMs;
@@ -140,6 +143,15 @@ public partial class VoxelWorld : Node3D, IBlockReader
 			PlanStreaming(focus);
 			UnloadOutside(focus);
 			Prof.Plan += Prof.Since(p0);
+		}
+
+		// The collision gate is centred on the player's section, so crossing a section
+		// boundary can bring sections into range that were skipped as out of range before.
+		var playerSection = PlayerSection();
+		if (playerSection != _lastPlayerSection)
+		{
+			_lastPlayerSection = playerSection;
+			RetagCollisionSections(focus, playerSection);
 		}
 
 		ulong t0 = Time.GetTicksUsec();
@@ -197,13 +209,19 @@ public partial class VoxelWorld : Node3D, IBlockReader
 		_pendingCursor = 0;
 	}
 
+	/// <summary>Generates pending chunks under the shared deadline and resumes from
+	/// <see cref="_pendingCursor"/> next frame. The first chunk is always built even when the
+	/// deadline is already spent: that is a progress guarantee, separate from the budget — do not
+	/// remove it. <see cref="ChunksPerFrame"/> is only a hard per-frame upper bound, not the budget.</summary>
 	private void RunGenerationSystem(Vector3I focus)
 	{
-		int budget = ChunksPerFrame;
-		while (budget-- > 0 && _pendingCursor < _pending.Count)
+		long deadline = (long)Time.GetTicksUsec() + ChunkWorkBudgetMs * 1000L;
+		int max = ChunksPerFrame;
+		while (_pendingCursor < _pending.Count && max-- > 0)
 		{
 			var key = _pending[_pendingCursor++];
 			if (!_index.ContainsKey(key)) CreateChunk(key);
+			if ((long)Time.GetTicksUsec() >= deadline) break;
 		}
 		if (_pendingCursor >= _pending.Count) _pending.Clear();
 	}
@@ -226,8 +244,8 @@ public partial class VoxelWorld : Node3D, IBlockReader
 			var coord = entity.GetComponent<ChunkCoord>();
 			_index.Remove(coord.Vector);
 			ref var visual = ref entity.GetComponent<ChunkVisual>();
-			visual.Mesh?.QueueFree();
-			visual.Body?.QueueFree();
+			if (visual.Meshes != null) foreach (var node in visual.Meshes) node?.QueueFree();
+			if (visual.Bodies != null) foreach (var body in visual.Bodies) body?.QueueFree();
 			BlockEntities.DropChunk(Store, coord.Vector); // unloading takes its block entities with it
 			entity.DeleteEntity();
 		}
@@ -254,49 +272,70 @@ public partial class VoxelWorld : Node3D, IBlockReader
 		if (_work.Count == 0) { _meshWorkMs = 0; return; }
 		_work.Sort((a, b) => a.Distance.CompareTo(b.Distance));
 		ulong w0 = Time.GetTicksUsec();
-		ProcessWithinBudget(_work, RebuildMesh);
+		ProcessWithinBudget(_work, RebuildMesh, (long)w0 + ChunkWorkBudgetMs * 1000L);
 		_meshWorkMs = Prof.Since(w0);
 	}
 
-	private void RebuildMesh(Entity entity)
+	/// <summary>Meshes sections starting at <see cref="ChunkVisual.Cursor"/> and wrapping, until
+	/// the shared deadline is spent; always does at least one. The tag stays while any section is
+	/// unmeshed; only a fully meshed chunk moves to the collision phase.</summary>
+	private void RebuildMesh(Entity entity, long deadline)
 	{
-		entity.RemoveTag<NeedsMesh>();
-		entity.AddTag<NeedsCollision>();
-
 		var coord = entity.GetComponent<ChunkCoord>();
-		var blocks = entity.GetComponent<ChunkBlocks>().Value;
-
-		ulong started = Time.GetTicksUsec();
-		long allocated = GC.GetAllocatedBytesForCurrentThread();
-		var mesh = ChunkMesher.Build(this, coord, blocks, out _);
-		MeshAllocBytes += GC.GetAllocatedBytesForCurrentThread() - allocated;
-		double meshMs = (Time.GetTicksUsec() - started) / 1000.0;
-		MeshCount++;
-		MeshMsTotal += meshMs;
-		MeshMsMax = Mathf.Max(MeshMsMax, meshMs);
-
+		ref var data = ref entity.GetComponent<ChunkBlocks>();
 		ref var visual = ref entity.GetComponent<ChunkVisual>();
-		if (mesh == null)
+		EnsureSectionArrays(ref visual);
+
+		int count = ChunkVisual.SectionCount;
+		int start = visual.Cursor;
+		for (int k = 0; k < count; k++)
 		{
-			visual.Mesh?.QueueFree();
-			visual.Body?.QueueFree();
-			visual.Mesh = null;
-			visual.Body = null;
-			visual.Shape = null;
-			return;
+			int si = (start + k) % count;
+			ulong bit = 1UL << si;
+			if ((visual.MeshDone & bit) != 0) continue;
+			var section = ChunkVisual.SectionOf(si);
+
+			ulong started = Time.GetTicksUsec();
+			long allocated = GC.GetAllocatedBytesForCurrentThread();
+			var mesh = ChunkMesher.Build(this, coord, section, data.Value, out _, data.Orientation);
+			MeshAllocBytes += GC.GetAllocatedBytesForCurrentThread() - allocated;
+			double meshMs = (Time.GetTicksUsec() - started) / 1000.0;
+			MeshCount++;
+			MeshMsTotal += meshMs;
+			MeshMsMax = Mathf.Max(MeshMsMax, meshMs);
+
+			if (mesh == null)
+			{
+				visual.Meshes[si]?.QueueFree();
+				visual.Meshes[si] = null;
+			}
+			else
+			{
+				var node = visual.Meshes[si];
+				if (node == null)
+				{
+					node = new MeshInstance3D
+					{
+						Name = $"Chunk_{coord.X}_{coord.Y}_{coord.Z}_{si}",
+						MaterialOverride = Material,
+					};
+					AddChild(node);
+					visual.Meshes[si] = node;
+				}
+				node.Position = SectionOrigin(coord, section);
+				node.Mesh = mesh;
+			}
+
+			visual.MeshDone |= bit;
+			visual.Cursor = (si + 1) % count;
+			if ((long)Time.GetTicksUsec() >= deadline) break;
 		}
 
-		if (visual.Mesh == null)
+		if (visual.MeshDone == ulong.MaxValue)
 		{
-			visual.Mesh = new MeshInstance3D
-			{
-				Name = $"Chunk_{coord.X}_{coord.Y}_{coord.Z}",
-				MaterialOverride = Material,
-				Position = new Vector3(coord.X * ChunkSize, coord.Y * ChunkSize, coord.Z * ChunkSize),
-			};
-			AddChild(visual.Mesh);
+			entity.RemoveTag<NeedsMesh>();
+			entity.AddTag<NeedsCollision>();
 		}
-		visual.Mesh.Mesh = mesh;
 	}
 
 	// ---- system 3: collision --------------------------------------------
@@ -304,33 +343,111 @@ public partial class VoxelWorld : Node3D, IBlockReader
 	private void RunCollisionSystem(Vector3I focus)
 	{
 		_work.Clear();
+		// Collision is needed only near the player, and a section is SectionSize blocks wide, so
+		// the player's chunk and its neighbours cover every section within CollisionRadius.
+		int reach = (CollisionRadius + SectionSize - 1) / SectionSize;
 		var query = Store.Query<ChunkCoord, ChunkVisual>().AllTags(Tags.Get<NeedsCollision>());
 		query.ForEachEntity((ref ChunkCoord coord, ref ChunkVisual visual, Entity entity) =>
 		{
-			// Collision shapes are the expensive half of chunk work and are only needed
-			// near the player, so distant chunks render without one.
-			if (Mathf.Abs(coord.X - focus.X) > CollisionRadius) return;
-			if (Mathf.Abs(coord.Y - focus.Y) > CollisionRadius) return;
-			if (Mathf.Abs(coord.Z - focus.Z) > CollisionRadius) return;
+			if (Mathf.Abs(coord.X - focus.X) > reach) return;
+			if (Mathf.Abs(coord.Y - focus.Y) > reach) return;
+			if (Mathf.Abs(coord.Z - focus.Z) > reach) return;
 			_work.Add((SquaredDistance(coord.Vector, new Vector3(Focus.X, Focus.Y, Focus.Z)), entity));
 		});
 
 		if (_work.Count == 0) { _colWorkMs = 0; return; }
 		_work.Sort((a, b) => a.Distance.CompareTo(b.Distance));
 		ulong w0 = Time.GetTicksUsec();
-		ProcessWithinBudget(_work, UpdateCollision);
+		ProcessWithinBudget(_work, UpdateCollision, (long)w0 + ChunkWorkBudgetMs * 1000L);
 		_colWorkMs = Prof.Since(w0);
 	}
 
-	private void UpdateCollision(Entity entity)
+	/// <summary>Builds collision for the sections whose centre is within CollisionRadius sections
+	/// of the player's section, starting at <see cref="ChunkVisual.Cursor"/> and wrapping. Decided
+	/// sections are remembered in <see cref="ChunkVisual.CollisionDone"/>; the tag is cleared once a
+	/// full pass finds nothing left to decide, so a later gate move can re-queue the chunk. Always
+	/// does at least one section, stops at the shared deadline.</summary>
+	private void UpdateCollision(Entity entity, long deadline)
 	{
-		entity.RemoveTag<NeedsCollision>();
+		var coord = entity.GetComponent<ChunkCoord>();
+		ref var data = ref entity.GetComponent<ChunkBlocks>();
 		ref var visual = ref entity.GetComponent<ChunkVisual>();
-		var mesh = visual.Mesh?.Mesh;
+		EnsureSectionArrays(ref visual);
+		var player = PlayerSection();
 
-		// An empty mesh means the chunk is all air or all solid: if every face of every
-		// block is hidden there is nothing to render, but a fully buried chunk still has
-		// to stop a player digging down through it.
+		int count = ChunkVisual.SectionCount;
+		int start = visual.Cursor;
+		bool complete = true;
+		for (int k = 0; k < count; k++)
+		{
+			int si = (start + k) % count;
+			ulong bit = 1UL << si;
+			if ((visual.CollisionDone & bit) != 0) continue;
+			// A section still waiting for its mesh is decided once the mesh phase is done with it.
+			if ((visual.MeshDone & bit) == 0) continue;
+			var section = ChunkVisual.SectionOf(si);
+			// SectionOf is chunk-local 0..3; the player is a world section index, so convert
+			// before comparing: world section = coord * SectionsPerAxis + local.
+			if (Mathf.Abs(coord.X * SectionsPerAxis + section.X - player.X) > CollisionRadius) continue;
+			if (Mathf.Abs(coord.Y * SectionsPerAxis + section.Y - player.Y) > CollisionRadius) continue;
+			if (Mathf.Abs(coord.Z * SectionsPerAxis + section.Z - player.Z) > CollisionRadius) continue;
+
+			ulong started = Time.GetTicksUsec();
+			long allocated = GC.GetAllocatedBytesForCurrentThread();
+			BuildSectionCollision(ref visual, coord, section, si, data.Value);
+			CollisionAllocBytes += GC.GetAllocatedBytesForCurrentThread() - allocated;
+			visual.CollisionDone |= bit;
+			visual.Cursor = (si + 1) % count;
+
+			double collisionMs = (Time.GetTicksUsec() - started) / 1000.0;
+			CollisionCount++;
+			CollisionMsTotal += collisionMs;
+			CollisionMsMax = Mathf.Max(CollisionMsMax, collisionMs);
+
+			if ((long)Time.GetTicksUsec() >= deadline) { complete = false; break; }
+		}
+
+		if (complete) entity.RemoveTag<NeedsCollision>();
+	}
+
+	/// <summary>Crossing a section boundary moves the collision gate, so a chunk whose tag was
+	/// already cleared may now have undecided sections inside the gate: re-tag it (never while it
+	/// is still meshing — collision needs the section's mesh). Called once per section crossing.</summary>
+	private void RetagCollisionSections(Vector3I focus, Vector3I playerSection)
+	{
+		int reach = (CollisionRadius + SectionSize - 1) / SectionSize;
+		for (int dy = -reach; dy <= reach; dy++)
+		{
+			for (int dz = -reach; dz <= reach; dz++)
+			{
+				for (int dx = -reach; dx <= reach; dx++)
+				{
+					var chunk = focus + new Vector3I(dx, dy, dz);
+					if (!_index.TryGetValue(chunk, out var entity)) continue;
+					if (entity.Tags.Has<NeedsMesh>() || entity.Tags.Has<NeedsCollision>()) continue;
+					bool needed = false;
+					{
+						ref var visual = ref entity.GetComponent<ChunkVisual>();
+						for (int si = 0; si < ChunkVisual.SectionCount && !needed; si++)
+						{
+							if ((visual.CollisionDone & (1UL << si)) != 0) continue;
+							var section = ChunkVisual.SectionOf(si); // chunk-local 0..3
+							needed = Mathf.Abs(chunk.X * SectionsPerAxis + section.X - playerSection.X) <= CollisionRadius
+								&& Mathf.Abs(chunk.Y * SectionsPerAxis + section.Y - playerSection.Y) <= CollisionRadius
+								&& Mathf.Abs(chunk.Z * SectionsPerAxis + section.Z - playerSection.Z) <= CollisionRadius;
+						}
+					}
+					if (needed) entity.AddTag<NeedsCollision>();
+				}
+			}
+		}
+	}
+
+	/// <summary>One section's collision: the section's own mesh as a trimesh, a box when the
+	/// section is solid but meshless (buried), and no body at all when it is all air.</summary>
+	private void BuildSectionCollision(ref ChunkVisual visual, ChunkCoord coord, Vector3I section, int si, byte[] blocks)
+	{
+		var mesh = visual.Meshes[si]?.Mesh;
 		Shape3D shape;
 		Vector3 shapeOffset;
 		if (mesh != null)
@@ -338,52 +455,81 @@ public partial class VoxelWorld : Node3D, IBlockReader
 			shape = mesh.CreateTrimeshShape();
 			shapeOffset = Vector3.Zero;
 		}
-		else if (HasSolidBlocks(entity.GetComponent<ChunkBlocks>().Value))
+		else if (HasSolidBlocks(blocks, section.X, section.Y, section.Z))
 		{
-			shape = new BoxShape3D { Size = Vector3.One * ChunkSize };
-			shapeOffset = Vector3.One * (ChunkSize * 0.5f);
+			shape = new BoxShape3D { Size = Vector3.One * SectionSize };
+			shapeOffset = Vector3.One * (SectionSize * 0.5f);
 		}
 		else
 		{
-			return; // all air
+			// all air: drop any stale body left from before an edit
+			visual.Bodies[si]?.QueueFree();
+			visual.Bodies[si] = null;
+			visual.Shapes[si] = null;
+			return;
 		}
 
-		var coord = entity.GetComponent<ChunkCoord>();
-		ulong started = Time.GetTicksUsec();
-		long allocated = GC.GetAllocatedBytesForCurrentThread();
-		if (visual.Body == null)
+		if (visual.Bodies[si] == null)
 		{
-			visual.Body = new StaticBody3D { Name = $"Body_{coord.X}_{coord.Y}_{coord.Z}" };
-			visual.Shape = new CollisionShape3D();
-			visual.Body.AddChild(visual.Shape);
-			AddChild(visual.Body);
+			visual.Bodies[si] = new StaticBody3D { Name = $"Body_{coord.X}_{coord.Y}_{coord.Z}_{si}" };
+			visual.Shapes[si] = new CollisionShape3D();
+			visual.Bodies[si].AddChild(visual.Shapes[si]);
+			AddChild(visual.Bodies[si]);
 		}
-		visual.Body.Position = new Vector3(coord.X * ChunkSize, coord.Y * ChunkSize, coord.Z * ChunkSize);
-		visual.Shape.Position = shapeOffset;
-		visual.Shape.Shape = shape;
-		CollisionAllocBytes += GC.GetAllocatedBytesForCurrentThread() - allocated;
-
-		double collisionMs = (Time.GetTicksUsec() - started) / 1000.0;
-		CollisionCount++;
-		CollisionMsTotal += collisionMs;
-		CollisionMsMax = Mathf.Max(CollisionMsMax, collisionMs);
+		visual.Bodies[si].Position = SectionOrigin(coord, section);
+		visual.Shapes[si].Position = shapeOffset;
+		visual.Shapes[si].Shape = shape;
 	}
 
-	private static bool HasSolidBlocks(byte[] blocks)
+	/// <summary>True if this section's cells contain any non-air block.</summary>
+	private static bool HasSolidBlocks(byte[] blocks, int sx, int sy, int sz)
 	{
-		for (int i = 0; i < blocks.Length; i++)
-			if (blocks[i] != (byte)Block.Air) return true;
+		int x0 = sx * SectionSize, y0 = sy * SectionSize, z0 = sz * SectionSize;
+		for (int y = y0; y < y0 + SectionSize; y++)
+			for (int z = z0; z < z0 + SectionSize; z++)
+				for (int x = x0; x < x0 + SectionSize; x++)
+					if (blocks[ChunkBlocks.Index(x, y, z)] != (byte)Block.Air) return true;
 		return false;
 	}
 
-	/// <summary>Runs work items until the millisecond budget is spent, always doing at least one.</summary>
-	private void ProcessWithinBudget(List<(float Distance, Entity Entity)> items, Action<Entity> work)
+	/// <summary>The player's WORLD section coordinate, the centre of the collision gate.
+	/// Compare with <see cref="ChunkVisual.SectionOf"/> only after
+	/// chunk * SectionsPerAxis + local.</summary>
+	private Vector3I PlayerSection() => new(
+		FloorDiv(Mathf.FloorToInt(Focus.X), SectionSize),
+		FloorDiv(Mathf.FloorToInt(Focus.Y), SectionSize),
+		FloorDiv(Mathf.FloorToInt(Focus.Z), SectionSize));
+
+	/// <summary>World origin of one section's cube.</summary>
+	private static Vector3 SectionOrigin(ChunkCoord coord, Vector3I section) => new(
+		coord.X * ChunkSize + section.X * SectionSize,
+		coord.Y * ChunkSize + section.Y * SectionSize,
+		coord.Z * ChunkSize + section.Z * SectionSize);
+
+	/// <summary>The section index of a world position inside a chunk, clamped to the chunk.</summary>
+	private static int SectionIndexAt(Vector3 position, ChunkCoord coord)
 	{
-		ulong started = Time.GetTicksUsec();
+		int sx = Mathf.Clamp(FloorDiv(Mathf.FloorToInt(position.X) - coord.X * ChunkSize, SectionSize), 0, SectionsPerAxis - 1);
+		int sy = Mathf.Clamp(FloorDiv(Mathf.FloorToInt(position.Y) - coord.Y * ChunkSize, SectionSize), 0, SectionsPerAxis - 1);
+		int sz = Mathf.Clamp(FloorDiv(Mathf.FloorToInt(position.Z) - coord.Z * ChunkSize, SectionSize), 0, SectionsPerAxis - 1);
+		return (sy * SectionsPerAxis + sz) * SectionsPerAxis + sx;
+	}
+
+	private static void EnsureSectionArrays(ref ChunkVisual visual)
+	{
+		visual.Meshes ??= new MeshInstance3D[ChunkVisual.SectionCount];
+		visual.Bodies ??= new StaticBody3D[ChunkVisual.SectionCount];
+		visual.Shapes ??= new CollisionShape3D[ChunkVisual.SectionCount];
+	}
+
+	/// <summary>Runs work items until the shared millisecond deadline is spent, always doing at
+	/// least one. The deadline is computed once per system so one slow chunk cannot extend it.</summary>
+	private void ProcessWithinBudget(List<(float Distance, Entity Entity)> items, Action<Entity, long> work, long deadline)
+	{
 		for (int i = 0; i < items.Count; i++)
 		{
-			if (i > 0 && (Time.GetTicksUsec() - started) / 1000.0 >= ChunkWorkBudgetMs) return;
-			work(items[i].Entity);
+			if (i > 0 && (long)Time.GetTicksUsec() >= deadline) return;
+			work(items[i].Entity, deadline);
 		}
 	}
 
@@ -442,10 +588,10 @@ public partial class VoxelWorld : Node3D, IBlockReader
 
 		ulong started = Time.GetTicksUsec();
 		var coord = ChunkCoord.Of(key);
-		var blocks = new byte[ChunkMesher.Volume];
+		var blocks = new byte[ChunkSize * ChunkSize * ChunkSize];
 		Terrain.Fill(coord, blocks);
 		// Terrain never rotates anything, so every generated cell starts at None.
-		var orientations = new byte[ChunkMesher.Volume];
+		var orientations = new byte[ChunkSize * ChunkSize * ChunkSize];
 		double genMs = (Time.GetTicksUsec() - started) / 1000.0;
 		GenCount++;
 		GenMsTotal += genMs;
@@ -454,6 +600,8 @@ public partial class VoxelWorld : Node3D, IBlockReader
 		var entity = Store.CreateEntity(coord, new ChunkBlocks { Value = blocks, Orientation = orientations },
 			default(ChunkVisual), Tags.Get<NeedsMesh>());
 		_index[key] = entity;
+		// The section nearest the player is meshed first: that is what the player looks at.
+		entity.GetComponent<ChunkVisual>().Cursor = SectionIndexAt(Focus, coord);
 
 		// Neighbours were meshed against "unloaded chunk" and must be rebuilt.
 		for (int axis = 0; axis < 3; axis++)
@@ -473,33 +621,56 @@ public partial class VoxelWorld : Node3D, IBlockReader
 	private void MarkDirty(Vector3I key)
 	{
 		if (!_index.TryGetValue(key, out var entity)) return;
+		ref var visual = ref entity.GetComponent<ChunkVisual>();
+		visual.Cursor = SectionIndexAt(Focus, ChunkCoord.Of(key)); // start near the player
+		visual.MeshDone = 0;
+		visual.CollisionDone = 0;
 		entity.AddTag<NeedsMesh>();
 		entity.RemoveTag<NeedsCollision>();
 	}
 
-	/// <summary>Generates the chunks a spawn or respawn needs, but meshes only the one the
-	/// player is standing in so the teleport never costs more than a single chunk.</summary>
+	/// <summary>Generates the chunks a spawn or respawn needs, but builds only the chunk the
+	/// player is standing in, landing section first, under the normal frame budget: the rest
+	/// streams in. ponytail: radius is in 64^3 chunks now, so radius 1 covers 192x192 units
+	/// (16x the old 48x48 area) — each extra step is 16x the area.</summary>
 	public void EnsureAreaAround(Vector3 position, int radius)
 	{
+		// The collision gate must be centred on the landing point, not on wherever the player was.
+		Focus = position;
 		int cx = FloorDiv(Mathf.FloorToInt(position.X), ChunkSize);
 		int cz = FloorDiv(Mathf.FloorToInt(position.Z), ChunkSize);
-		var range = ColumnSurfaces(cx, cz);
 
-		for (int dz = -radius; dz <= radius; dz++)
+		// radius 0 forces only the landing chunk (landing section first); everything else
+		// streams under the 3 ms budget. The full column is 2-4 chunks x ~1.97 ms measured, so
+		// creating it here is a deterministic 4-8 ms teleport hitch. radius > 0 keeps its old
+		// meaning: every chunk around the landing point exists and is complete.
+		if (radius > 0)
 		{
-			for (int dx = -radius; dx <= radius; dx++)
+			for (int dz = -radius; dz <= radius; dz++)
 			{
-				var neighbour = ColumnSurfaces(cx + dx, cz + dz);
-				int firstY = FloorDiv(neighbour.Min, ChunkSize);
-				int lastY = FloorDiv(neighbour.Max + TerrainGenerator.MaxTreeHeight, ChunkSize);
-				for (int cy = firstY; cy <= lastY; cy++) CreateChunk(new Vector3I(cx + dx, cy, cz + dz));
+				for (int dx = -radius; dx <= radius; dx++)
+				{
+					var neighbour = ColumnSurfaces(cx + dx, cz + dz);
+					int firstY = FloorDiv(neighbour.Min, ChunkSize);
+					int lastY = FloorDiv(neighbour.Max + TerrainGenerator.MaxTreeHeight, ChunkSize);
+					for (int cy = firstY; cy <= lastY; cy++) CreateChunk(new Vector3I(cx + dx, cy, cz + dz));
+				}
 			}
 		}
 
-		var ground = ChunkKeyOf(Mathf.FloorToInt(position.X), range.Max + 1, Mathf.FloorToInt(position.Z));
+		// position.Y is the surface block's y by caller convention (FindSpawn/TeleportToSurface);
+		// range.Max + 1 could put the forced chunk above the surface (range.Max on a chunk
+		// boundary, or the player's column a chunk below the column max) and drop the player.
+		var ground = ChunkKeyOf(Mathf.FloorToInt(position.X), Mathf.FloorToInt(position.Y), Mathf.FloorToInt(position.Z));
 		var entity = CreateChunk(ground);
-		if (entity.Tags.Has<NeedsMesh>()) RebuildMesh(entity);
-		UpdateCollision(entity);
+		// Build the landing chunk under the normal budget, landing section first: the spawn must
+		// stand immediately, but a teleport must not freeze the frame meshing 64 sections.
+		int landing = SectionIndexAt(position, entity.GetComponent<ChunkCoord>());
+		entity.GetComponent<ChunkVisual>().Cursor = landing;
+		long deadline = (long)Time.GetTicksUsec() + ChunkWorkBudgetMs * 1000L;
+		if (entity.Tags.Has<NeedsMesh>()) RebuildMesh(entity, deadline);
+		entity.GetComponent<ChunkVisual>().Cursor = landing;
+		UpdateCollision(entity, deadline);
 	}
 
 	// ---- block access ---------------------------------------------------

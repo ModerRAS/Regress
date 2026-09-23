@@ -24,16 +24,20 @@ env:
   GODOT_TEMPLATE_VERSION: 4.7.2.stable.mono
 
 jobs:
-  release:
+  # Linux, Windows and Android exports all run on Linux: Godot's export templates are
+  # host-independent, and the Android export only needs the runner's preinstalled JDK
+  # (JAVA_HOME) and Android SDK (ANDROID_HOME) with its build-tools apksigner.
+  # No macOS/Xcode toolchain is involved, so this stays on the cheaper ubuntu runner.
+  desktop-android:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET 8
+      - name: Setup .NET 9
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 9.0.x
           cache: true
           cache-dependency-path: Regress.csproj
 
@@ -72,7 +76,31 @@ jobs:
             mv /tmp/templates/templates/* "$TPL_DIR/"
           fi
           "$HOME/godot/godot" --version
-          ls "$TPL_DIR/linux_release.x86_64" "$TPL_DIR/windows_release_x86_64.exe"
+          echo "--- export templates ---"
+          ls -l "$TPL_DIR"
+          test -f "$TPL_DIR/linux_release.x86_64"
+          test -f "$TPL_DIR/windows_release_x86_64.exe"
+          test -f "$TPL_DIR/macos.zip"
+          test -f "$TPL_DIR/android_release.apk"
+          if [ -f "$TPL_DIR/ios.zip" ]; then
+            echo "template check: ios.zip present"
+          else
+            echo "TEMPLATE GAP: ios.zip missing"
+            exit 1
+          fi
+
+      - name: Android build environment (JDK + SDK)
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "JAVA_HOME=$JAVA_HOME"
+          test -n "$ANDROID_HOME"
+          test -n "$JAVA_HOME"
+          ls "$ANDROID_HOME/build-tools"
+          test -x "$JAVA_HOME/bin/java"
+          test -x "$JAVA_HOME/bin/keytool"
+          "$JAVA_HOME/bin/java" -version
+          "$JAVA_HOME/bin/keytool" -help >/dev/null
 
       - name: Build
         run: dotnet build
@@ -81,12 +109,58 @@ jobs:
         run: |
           "$HOME/godot/godot" --headless --path . --import
 
-      - name: Export Linux and Windows
+      - name: Create throwaway Android debug keystore and editor settings
+        # Godot 4.7 only creates its debug keystore from an editor-settings-change
+        # notification (platform/android/export/export_plugin.cpp), which headless CI does
+        # not reliably trigger. Generate the throwaway debug key explicitly with the JDK's
+        # keytool and point Godot at it through a minimal EditorSettings resource.
+        # This is a CI debug key only -- never a production signing key.
         run: |
           set -euo pipefail
-          mkdir -p build/linux build/windows
+          KEYSTORE="$HOME/.local/share/godot/keystores/debug.keystore"
+          mkdir -p "$(dirname "$KEYSTORE")"
+          if [ ! -f "$KEYSTORE" ]; then
+            "$JAVA_HOME/bin/keytool" -genkeypair \
+              -keystore "$KEYSTORE" \
+              -storepass android -keypass android \
+              -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          SETTINGS_DIR="$HOME/.config/godot"
+          mkdir -p "$SETTINGS_DIR"
+          for f in editor_settings-4.tres editor_settings-4.7.tres; do
+            cat > "$SETTINGS_DIR/$f" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/debug_keystore = "$KEYSTORE"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          EOF
+          done
+          echo "ANDROID_KEYSTORE=$KEYSTORE"
+          ls -l "$KEYSTORE"
+          echo "--- editor settings ---"
+          cat "$SETTINGS_DIR/editor_settings-4.tres"
+          echo "ANDROID_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
+          # Release APKs are signed with the same throwaway CI keystore: sign_apk()'s release
+          # branch reads only keystore/release or GODOT_ANDROID_KEYSTORE_RELEASE_* and never
+          # falls back to the debug keystore (export_plugin.cpp:1761-1767, 3333-3349).
+          # preset.3 keeps keystore/release empty; the env vars inject this path.
+          echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$KEYSTORE" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_RELEASE_USER=androiddebugkey" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=android" >> "$GITHUB_ENV"
+
+      - name: Export Linux, Windows and Android
+        run: |
+          set -euo pipefail
+          mkdir -p build/linux build/windows build/android
           "$HOME/godot/godot" --headless --path . --export-release "Linux" build/linux/Regress.x86_64
           "$HOME/godot/godot" --headless --path . --export-release "Windows Desktop" build/windows/Regress.exe
+          "$HOME/godot/godot" --headless --path . --export-release "Android" build/android/Regress.apk
           # A missing .sln makes Godot export without publishing the C# assemblies (no data_* dir)
           # and the exported build segfaults; fail here instead of in the smoke test.
           test -n "$(find build/linux -name Regress.dll -print -quit)"
@@ -101,12 +175,265 @@ jobs:
           grep -q 'SELFTEST PASS' build/smoke.log
           grep -q "texpack: using 'Default' (res://texturepacks/default) tile_size=16 tiles=12/12" build/smoke.log
 
+      - name: Android keystore and APK signer evidence
+        run: |
+          set -euo pipefail
+          KEYSTORE="$HOME/.local/share/godot/keystores/debug.keystore"
+          echo "ANDROID_KEYSTORE=$KEYSTORE"
+          ls -l "$KEYSTORE"
+          sha256sum "$KEYSTORE"
+          "$JAVA_HOME/bin/keytool" -list -keystore "$KEYSTORE" -storepass android
+          echo "--- APK signer (keytool, v1/JAR signature) ---"
+          if ! "$JAVA_HOME/bin/keytool" -printcert -jarfile build/android/Regress.apk; then
+            echo "keytool found no v1 signature block (v2/v3-only APK); apksigner evidence follows"
+          fi
+          echo "--- APK signer (apksigner, v2/v3) ---"
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --print-certs build/android/Regress.apk
+
       - name: Package artifacts
         run: |
           set -euo pipefail
           cd build
           zip -qr Regress-linux-x86_64.zip linux
           zip -qr Regress-windows-x86_64.zip windows
+          cp android/Regress.apk Regress-android.apk
+          cd ..
+          for f in build/Regress-linux-x86_64.zip build/Regress-windows-x86_64.zip build/Regress-android.apk; do
+            test -f "$f"
+            ls -l "$f"
+            SIZE=$(wc -c < "$f")
+            echo "$f bytes=$SIZE"
+            test "$SIZE" -ge 1000000
+          done
+
+      - name: Upload desktop and Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Regress-desktop-android
+          path: |
+            build/Regress-linux-x86_64.zip
+            build/Regress-windows-x86_64.zip
+            build/Regress-android.apk
+          if-no-files-found: error
+
+  # iOS export needs Apple's Xcode toolchain, which only exists on macOS runners;
+  # the macOS export is produced on the same runner so it does not need its own job.
+  apple:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+          cache: true
+          cache-dependency-path: Regress.csproj
+
+      - name: Report .NET SDK
+        # Godot 4.7.2's mono templates require the project to target net9.0 (Android
+        # export_plugin.cpp:2944-2951 validates the TFM for non-gradle exports), so the
+        # project now targets net9.0 and the SDK here is 9.0.x. No `dotnet workload
+        # install ios` is documented as required; this print is the record of what CI
+        # had. If `dotnet publish -r ios-arm64` fails with NETSDK1147, add the workload.
+        run: |
+          dotnet --info
+          dotnet workload list
+
+      - name: Cache Godot mono editor (macOS)
+        uses: actions/cache@v4
+        with:
+          path: ~/godot
+          key: godot-${{ env.GODOT_VERSION }}-${{ env.GODOT_STATUS }}-mono-macos
+
+      - name: Cache Godot export templates (macOS)
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Application Support/Godot/export_templates
+          key: godot-templates-${{ env.GODOT_VERSION }}-${{ env.GODOT_STATUS }}-mono-macos
+
+      - name: Install Godot mono editor and export templates (macOS)
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/godot"
+          GODOT_BIN=$(find "$HOME/godot" -maxdepth 5 -type f -path '*/Contents/MacOS/Godot' -print -quit)
+          if [ -z "$GODOT_BIN" ]; then
+            URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_STATUS}/Godot_v${GODOT_VERSION}-${GODOT_STATUS}_mono_macos.universal.zip"
+            curl -fL --retry 3 -o /tmp/godot.zip "$URL"
+            unzip -q -o /tmp/godot.zip -d "$HOME/godot"
+            ls -R "$HOME/godot" | head -40 || true
+            GODOT_BIN=$(find "$HOME/godot" -maxdepth 5 -type f -path '*/Contents/MacOS/Godot' -print -quit)
+          fi
+          test -n "$GODOT_BIN"
+          chmod +x "$GODOT_BIN"
+          echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
+          TPL_DIR="$HOME/Library/Application Support/Godot/export_templates/${GODOT_TEMPLATE_VERSION}"
+          if [ ! -f "$TPL_DIR/macos.zip" ]; then
+            URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_STATUS}/Godot_v${GODOT_VERSION}-${GODOT_STATUS}_mono_export_templates.tpz"
+            curl -fL --retry 3 -o /tmp/templates.tpz "$URL"
+            rm -rf /tmp/templates
+            unzip -q -o /tmp/templates.tpz -d /tmp/templates
+            mkdir -p "$TPL_DIR"
+            mv /tmp/templates/templates/* "$TPL_DIR/"
+          fi
+          "$GODOT_BIN" --version
+          echo "--- export templates ---"
+          ls -l "$TPL_DIR"
+          test -f "$TPL_DIR/macos.zip"
+          if [ -f "$TPL_DIR/ios.zip" ]; then
+            echo "template check: ios.zip present"
+          else
+            echo "TEMPLATE GAP: ios.zip missing"
+            exit 1
+          fi
+
+      - name: Build
+        run: dotnet build
+
+      - name: Import project
+        run: |
+          set -euo pipefail
+          "$GODOT_BIN" --headless --verbose --path . --import > /tmp/import.log 2>&1 &
+          PID=$!
+          for i in $(seq 1 60); do kill -0 "$PID" 2>/dev/null || break; sleep 5; done
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "IMPORT TIMEOUT after 300s"
+            ps -ef | head -40
+            echo "--- import.log tail ---"; tail -n 80 /tmp/import.log || true
+            echo "--- editor log tail ---"; tail -n 80 "$HOME/Library/Application Support/Godot/logs/godot.log" 2>/dev/null || true
+            kill -9 "$PID" 2>/dev/null || true
+            exit 1
+          fi
+          wait "$PID" || { echo "IMPORT FAILED"; tail -n 80 /tmp/import.log; exit 1; }
+          tail -n 20 /tmp/import.log
+
+      - name: Export macOS and iOS
+        run: |
+          set -euo pipefail
+          mkdir -p build/macos build/ios
+          "$GODOT_BIN" --headless --path . --export-release "macOS" build/macos/Regress.zip
+          "$GODOT_BIN" --headless --path . --export-release "iOS" build/ios/Regress.ipa
+          echo "--- build/macos ---"
+          ls -l build/macos
+          echo "--- build/ios shape ---"
+          find build/ios -maxdepth 3 -print | sort
+          test -s build/macos/Regress.zip
+          test -n "$(find build/ios -mindepth 1 -print -quit)"
+
+      - name: macOS guard and lipo architecture evidence
+        run: |
+          set -euo pipefail
+          ls -l build/macos/Regress.zip
+          SIZE=$(wc -c < build/macos/Regress.zip)
+          echo "Regress.zip bytes=$SIZE"
+          test "$SIZE" -ge 1000000
+          rm -rf "$RUNNER_TEMP/macos_app"
+          mkdir -p "$RUNNER_TEMP/macos_app"
+          unzip -q -o build/macos/Regress.zip -d "$RUNNER_TEMP/macos_app"
+          APP_BIN=$(find "$RUNNER_TEMP/macos_app" -type f -path '*/Contents/MacOS/*' -print -quit)
+          test -n "$APP_BIN"
+          test -s "$APP_BIN"
+          ls -l "$APP_BIN"
+          ARCHS=$(lipo -archs "$APP_BIN")
+          echo "lipo -archs: $ARCHS"
+          file "$APP_BIN"
+          echo "MACOS_ARCHES=$ARCHS"
+          # Deliberately not failing when arm64 is absent: the template decides that and
+          # lipo output is the evidence; only a missing/empty binary fails above.
+
+      - name: iOS export guard
+        run: |
+          set -euo pipefail
+          echo "--- build/ios shape ---"
+          find build/ios -maxdepth 3 -print | sort
+          test -n "$(find build/ios -mindepth 1 -print -quit)"
+          # BSD du on macOS has no -b; -sk reports KiB, so bytes = KiB * 1024.
+          IOS_KB=$(du -sk build/ios | cut -f1)
+          IOS_BYTES=$((IOS_KB * 1024))
+          echo "build/ios bytes=$IOS_BYTES"
+          test "$IOS_BYTES" -ge 100000
+
+      - name: xcodebuild probe (non-fatal)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          PROJ=$(find build/ios -maxdepth 3 -type d -name '*.xcodeproj' -print -quit)
+          if [ -z "$PROJ" ]; then
+            echo "IOS_XCODEBUILD_PROBE=FAIL (no .xcodeproj found in build/ios)"
+            exit 0
+          fi
+          set +e
+          xcodebuild -list -project "$PROJ" 2>&1 | tee /tmp/ios_list.log
+          # $1 drops the leading indentation of the scheme line: run 35839335298 extracted
+          # "        Regress" and xcodebuild then failed with "does not contain a scheme named ...".
+          SCHEME=$(awk '/Schemes:/{f=1;next} f && NF {print $1; exit}' /tmp/ios_list.log)
+          if [ -z "$SCHEME" ]; then
+            SCHEME=$(basename "$PROJ" .xcodeproj)
+          fi
+          echo "probe scheme: $SCHEME"
+          xcodebuild -project "$PROJ" -scheme "$SCHEME" -sdk iphoneos -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            -derivedDataPath /tmp/iosdd build > /tmp/ios_build.log 2>&1 &
+          PID=$!
+          for i in $(seq 1 240); do kill -0 "$PID" 2>/dev/null || break; sleep 5; done
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "IOS_XCODEBUILD_PROBE=FAIL (timeout after 1200s)"
+            ps -ef | head -40
+            echo "--- ios_build.log tail ---"; tail -n 80 /tmp/ios_build.log || true
+            kill -9 "$PID" 2>/dev/null || true
+            exit 0
+          fi
+          wait "$PID"
+          RC=$?
+          tail -n 60 /tmp/ios_build.log
+          if [ $RC -eq 0 ]; then
+            echo "IOS_XCODEBUILD_PROBE=PASS"
+          else
+            echo "IOS_XCODEBUILD_PROBE=FAIL"
+          fi
+          exit 0
+
+      - name: Package macOS and iOS artifacts
+        run: |
+          set -euo pipefail
+          cp build/macos/Regress.zip build/Regress-macos-universal.zip
+          PROJ=$(find build/ios -maxdepth 3 -type d -name '*.xcodeproj' -print -quit || true)
+          if [ -n "$PROJ" ]; then
+            SRC=$(dirname "$PROJ")
+          else
+            SRC=build/ios
+          fi
+          ( cd "$(dirname "$SRC")" && zip -qr "$GITHUB_WORKSPACE/build/Regress-ios-xcodeproj.zip" "$(basename "$SRC")" )
+          ls -l build/Regress-macos-universal.zip build/Regress-ios-xcodeproj.zip
+          test "$(wc -c < build/Regress-macos-universal.zip)" -ge 1000000
+          test "$(wc -c < build/Regress-ios-xcodeproj.zip)" -ge 100000
+
+      - name: Upload Apple artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Regress-apple
+          path: |
+            build/Regress-macos-universal.zip
+            build/Regress-ios-xcodeproj.zip
+          if-no-files-found: error
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [desktop-android, apple]
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: 'Regress-*'
+          merge-multiple: true
+          path: build
+
+      - name: List artifacts
+        run: ls -l build
 
       - name: Publish release
         # dry_run=true skips this step: softprops/action-gh-release@v2 has no dry_run input of its
@@ -116,7 +443,7 @@ jobs:
         with:
           tag_name: ${{ inputs.version != '' && inputs.version || github.ref_name }}
           name: ${{ inputs.version != '' && inputs.version || github.ref_name }}
-          files: build/Regress-*.zip
+          files: build/*
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

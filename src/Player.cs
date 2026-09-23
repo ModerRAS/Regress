@@ -20,15 +20,15 @@ public partial class Player : CharacterBody3D
 		AddChild(new CollisionShape3D
 		{
 			Name = "Body",
-			Shape = new CapsuleShape3D { Radius = 0.35f, Height = 1.8f },
-			Position = new Vector3(0, 0.9f, 0),
+			Shape = new CapsuleShape3D { Radius = 2.0f, Height = 8.0f },
+			Position = new Vector3(0, 4.0f, 0),
 		});
 
 		Camera = new Camera3D
 		{
 			Name = "Camera",
 			Fov = 75f,
-			Far = 1200f,
+			Far = 4800f,
 			Current = true,
 			Position = new Vector3(0, PlayerSystems.EyeHeight, 0),
 		};

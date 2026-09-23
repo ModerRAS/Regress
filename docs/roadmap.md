@@ -2,8 +2,10 @@
 
 ## Done
 
-- **Voxel world** — 16×16×16 cubic chunks, unbounded vertical extent, negative terrain, bedrock
-  floor, heightmap terrain with deterministic trees that cross chunk borders.
+- **Voxel world** — 64×64×64 chunks of 16³ sections, unbounded vertical extent, negative terrain,
+  bedrock floor, heightmap terrain with deterministic trees that cross chunk borders. The ×4
+  feel-preserving scale conversion (lengths/velocities/accelerations ×4, times/counts ×1) is
+  tabulated in [architecture.md](architecture.md).
 - **Streaming** — plan / generate / mesh / unload, nearest first, all budgeted in milliseconds.
 - **Collision** — trimesh from the visible mesh near the player, `BoxShape3D` for fully buried
   chunks that have no visible mesh, recovery if the player ends up inside geometry.
@@ -11,7 +13,7 @@
 - **Block edits as a request pipeline** — hardness-based mining duration, tree felling via
   `BlockBehaviors`, placement legality in one place.
 - **ECS** — chunk lifecycle expressed as archetypes; see [architecture.md](architecture.md).
-- **Test harness** — `--selftest` (277 assertions), `--demo` (scripted walk / build / mine),
+- **Test harness** — `--selftest` (count 待测 after the 64³ scale change), `--demo` (scripted walk / build / mine),
   `--bench` (five-phase performance run with per-system breakdown), `--shot`, `--map`,
   `--freecam`, `--frozen`, `--diag`.
 - **Texture packs v1** — `pack.json` + twelve keyed tiles, four-rung discovery ending in
@@ -19,7 +21,7 @@
 - **Mobs** — up to 48 deterministic wanderers. The AI is a pure, engine-free function over
   `IBlockReader` (`MobAiRules.Decide`), movement is gravity + AABB instead of `CharacterBody3D`,
   spawn/despawn follow a seeded square ring around `Focus`.
-- **Interactive blocks as entities** — a placed interactive block is a position-keyed ECS entity (`BlockPos` + `Interactable` + per-kind state) found through an O(1) chunk-bucketed registry; the 4096-byte chunk array stays authoritative for terrain and render, `VoxelWorld.SetBlock` is the single sync point, and RMB on an interactive target interacts instead of placing. `Block.Chest` is delivered (toggle + a HUD line); the append-only vocabulary extension process is documented in [texture-packs.md](texture-packs.md). See [architecture.md](architecture.md).
+- **Interactive blocks as entities** — a placed interactive block is a position-keyed ECS entity (`BlockPos` + `Interactable` + per-kind state) found through an O(1) chunk-bucketed registry; the ChunkSize³-byte chunk array stays authoritative for terrain and render, `VoxelWorld.SetBlock` is the single sync point, and RMB on an interactive target interacts instead of placing. `Block.Chest` is delivered (toggle + a HUD line); the append-only vocabulary extension process is documented in [texture-packs.md](texture-packs.md). See [architecture.md](architecture.md).
 - **Pumpkin** — the append-only recipe's second worked example: upright-only, a carved front on
   local +Z (`pumpkin_posz`), six frozen fallback cells on `sand`, and no interaction cost; see
   [adding-a-block.md](adding-a-block.md).
@@ -91,3 +93,11 @@ Carried from [architecture.md](architecture.md#known-weaknesses):
 - The mesher allocates ~430 KB per chunk; a two-pass count-then-fill mesh would remove it.
 - No persistence: player-built chunks are pinned in memory rather than written to disk, so the
   world resets between sessions.
+- **App icon**: iOS currently uses a placeholder game tile and Android keeps the engine default launcher icon. Both need a real 1024×1024 icon from the user before release.
+
+## Optional / user decides
+
+- **A visible player mesh (third person / arms).** This round specified the player body as
+  numbers — capsule 2.0 × 8.0 and body box 2.8 × 7.6 × 2.8 (4×4×8 voxels) — and asserts them
+  headlessly; first-person reading is the indirect check. Whether the player should *see* their own
+  body is a presentation choice only the user can make. Not started; do not self-assign.

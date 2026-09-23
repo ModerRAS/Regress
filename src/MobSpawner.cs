@@ -13,9 +13,9 @@ namespace Regress;
 public static class MobSpawner
 {
 	/// <summary>Square ring around the focus cell, outside the mob reaction radius.</summary>
-	public const float SpawnRadius = 24f;
-	public const float SpawnRingWidth = 8f;
-	public const float SpawnJitter = 0.3f;
+	public const float SpawnRadius = 96f;
+	public const float SpawnRingWidth = 32f;
+	public const float SpawnJitter = 1.2f;
 
 	private const int SelectedPerEight = 8; // hash(seed, cell) % 8 == 0 selects a cell
 
@@ -129,7 +129,7 @@ public static class MobSpawner
 			float dx = xform.Position.X - world.Focus.X;
 			float dz = xform.Position.Z - world.Focus.Z;
 			float far = dx * dx + dz * dz - MobSystems.DespawnRadius * MobSystems.DespawnRadius;
-			if (far > 0f || xform.Position.Y < world.BedrockY - 16f) Doomed.Add(entity);
+			if (far > 0f || xform.Position.Y < world.BedrockY - 64f) Doomed.Add(entity);
 		});
 		for (int i = 0; i < Doomed.Count; i++)
 		{
@@ -185,7 +185,7 @@ public static class MobSpawner
 			float dx = xform.Position.X - x;
 			float dy = xform.Position.Y - y;
 			float dz = xform.Position.Z - z;
-			if (dx * dx + dy * dy + dz * dz < 1.5f * 1.5f) near = true;
+			if (dx * dx + dy * dy + dz * dz < 6f * 6f) near = true;
 		});
 		return near;
 	}
