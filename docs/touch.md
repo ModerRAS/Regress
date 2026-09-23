@@ -12,27 +12,27 @@ Scope: a touch adapter that feeds the existing input contract. Nothing else.
 
 ## 2. Input contract
 
-The full set of fields touch drives. Line numbers cite `master@15b0605` (scale-64 merged).
+The full set of fields touch drives. Line numbers cite `master@e966356` (release-5platform merged).
 
 | Field | Def | Writer | Consumer |
 |---|---|---|---|
 | `PlayerState.Yaw` / `.Pitch` | `src/PlayerSystems.cs:21-22` | `src/Player.cs:65-66` (mouse look) | `Look` (`src/PlayerSystems.cs:127-139`, writes `:133-134`) |
-| `PlayerState.Selected` | `src/PlayerSystems.cs:20` | `src/Player.cs:91` | `Game.RefreshHud` (`src/Game.cs:246-252`) |
+| `PlayerState.Selected` | `src/PlayerSystems.cs:20` | `src/Player.cs:91` | `Game.RefreshHud` (`src/Game.cs:821-827`) |
 | `PlayerState.Flying` | `src/PlayerSystems.cs:18` | `src/Player.cs:98` | `Move` (`src/PlayerSystems.cs:149`) |
 | `PlayerIntent.Wish` | `src/PlayerSystems.cs:48` | `src/PlayerSystems.cs:104-109` | `PollInput` normalize + `Move` (`:151-158`) |
 | `PlayerIntent.Jump` / `.Up` / `.Down` | `src/PlayerSystems.cs:49` | `src/PlayerSystems.cs:110-112` | `src/PlayerSystems.cs:151-153` (Up/Down), `:161` (Jump) |
 | `PlayerIntent.Mining` | `src/PlayerSystems.cs:52` | `src/PlayerSystems.cs:114-115` | `src/PlayerSystems.cs:185` |
-| `PlayerIntent.Place` | `src/PlayerSystems.cs:55` | `src/Player.cs:71` | `src/PlayerSystems.cs:342-345` |
-| `PlayerIntent.RotateNext` / `.RotatePrev` | `src/PlayerSystems.cs:58` | `src/PlayerSystems.cs:117-122` (edge-queued at `:119-120`) | `src/PlayerSystems.cs:267`, applied in `Rotate` `:251-253`, cleared `:284-285` |
+| `PlayerIntent.Place` | `src/PlayerSystems.cs:55` | `src/Player.cs:71` | `src/PlayerSystems.cs:343-346` |
+| `PlayerIntent.RotateNext` / `.RotatePrev` | `src/PlayerSystems.cs:58` | `src/PlayerSystems.cs:117-122` (edge-queued at `:119-120`) | `src/PlayerSystems.cs:268`, applied in `Rotate` `:252-254`, cleared `:285-286` |
 
 Struct declarations: `PlayerState` `:16`, `PlayerIntent` `:46` (`RotateNextHeld`/`RotatePrevHeld`
 `:62`, `AutoWalk`/`AutoSprint`/`AutoMine` `:65`). Movement/look consumers: `Move` `:149-161`,
-`Mine` `:185`, `Look` `:133-134`, `Raycast` call sites `:366` and `:380` (helper `:449`).
+`Mine` `:185`, `Look` `:133-134`, `Raycast` call sites `:367` and `:387` (helper `:456`).
 
 `Wish` / `Jump` / `Up` / `Down` / `Sprint` / `Mining` are clobbered every frame by `PollInput`
 (`:109-115`), which is exactly why the touch merge state lives inside `PollInput`. `Place` and
-the rotate counters are NOT clobbered: `Build` clears `Place` (`:344`) and `UpdatePending`
-zeroes the rotate counters (`:284-285`). `Jump` and `Up` read the same key today (`:110`/`:111`),
+the rotate counters are NOT clobbered: `Build` clears `Place` (`:345`) and `UpdatePending`
+zeroes the rotate counters (`:285-286`). `Jump` and `Up` read the same key today (`:110`/`:111`),
 so one touch Jump button drives both.
 
 Movement/look values:
@@ -49,7 +49,7 @@ by `PollInput` (`src/PlayerSystems.cs:113`), Creative by `src/Player.cs:99`
 ### Completeness proof
 
 The only consumers of these fields are `Move` (`src/PlayerSystems.cs:142-177`),
-`Mine` (`:180-213`), `Build` (`:337-346`), `UpdateGhost` (`:294-303`) and
+`Mine` (`:180-212`), `Build` (`:338-347`), `UpdateGhost` (`:295-304`) and
 `Look` (`:127-139`); all raw `Input` reads live in `src/Player.cs` and `PollInput`
 (`src/PlayerSystems.cs:97-124`) — grep finds no other `Input.` use in `src/`. Every field
 a consumer reads is listed above, so nothing else is needed.
@@ -65,8 +65,8 @@ a consumer reads is listed above, so nothing else is needed.
   gesture, place is the instant one; holding past HoldMs *is* the tap boundary, so a
   second time threshold would be dead configuration.
 - Movement >16 px = look; no place and no mine on release.
-- Interact-beats-place precedence unchanged: `RightClickAction` (`src/PlayerSystems.cs:398-400`),
-  used by `RequestPlaceAtCrosshair` (`:406-424`).
+- Interact-beats-place precedence unchanged: `RightClickAction` (`src/PlayerSystems.cs:405-407`),
+  used by `RequestPlaceAtCrosshair` (`:413-431`).
 - Buttons: Jump (= `Up` while flying; both read the same key today,
   `src/PlayerSystems.cs:110-111`), Down, Fly toggle, hotbar row of `Blocks.Palette.Length`
   buttons (`src/Blocks.cs:40-44`, 9 entries), Q/E rotate. **No** Sprint, Creative or Respawn
@@ -75,7 +75,7 @@ a consumer reads is listed above, so nothing else is needed.
 
 ## 4. HUD plan
 
-- `TouchControls : CanvasLayer`, Layer 2 (above the existing `Hud` layer, `src/Game.cs:256`).
+- `TouchControls : CanvasLayer`, Layer 2 (above the existing `Hud` layer, `src/Game.cs:831`).
 - Created only when `DisplayServer.IsTouchscreenAvailable() || --touch || --touchtest`.
 - Children: `StickArea` + `LookArea` (`Control`, `MouseFilter = Stop`, drawn with
   `DrawCircle` — no textures, no assets), `HBoxContainer` of hotbar `Button`s,
@@ -107,21 +107,21 @@ a consumer reads is listed above, so nothing else is needed.
 
 `--touchtest` scenario, new `src/TouchTest.cs`:
 
-- `ProcessPriority = 1` so it runs after `Game._Process` (`src/Game.cs:100-203`).
+- `ProcessPriority = 1` so it runs after `Game._Process` (`src/Game.cs:181-350`).
 - Frame-scripted injection at real node rects, no wall-clock assertions.
 - `injection: PushInput (Viewport.PushInput(ev, true); headless down/drag/up reach Control._GuiInput, verified 4.7.2). Gesture checks inject at the HUD's real rects; button checks re-lay the 14 buttons into a 64x64 test grid first (headless viewport is 64x64 and --resolution is ignored there). The HUD's pixel layout is NOT verified headless — only by the tier-B --touch screenshot.`
 - Checks: `hud` / `stick` / `stick-release` / `drag-yaw` / `tap-place` / `hold-mine`
-  (+ real block break in Creative) / `jump` / `fly` / `hotbar` / `classify` (pure
-  function).
+  (+ real block break in Creative) / `jump` / `fly` / `hotbar` / `rotate` / `classify`
+  (pure function).
 - Exactly one machine line: `scenario touch: PASS|FAIL <detail>`, exit code 0/1 — the
-  repo-wide scenario convention (`docs/testing.md:80-81`).
+  repo-wide scenario convention (`docs/testing.md:81-82`).
 - `tools/run_game_tests.py` entry: tier A, `argv=["--headless", "--path", ".", "--", "--touchtest"]`,
   `markers=["scenario touch: PASS"]`, `exit=0`, added to `SCENARIOS`
-  (`tools/run_game_tests.py:25-61`).
+  (`tools/run_game_tests.py:25-69`).
 - `Classify(elapsedMs, movedPx)` is a pure function: `movedPx > TapSlopPx (16)` → Look;
-  else `elapsedMs >= HoldMs (250)` → Hold; else Tap. On release: never became Hold and
-  moved ≤ slop → `Place++`; Hold already started → just end Mining; moved > slop →
-  nothing (pure look).
+  else `elapsedMs >= HoldMs (250)` → Hold; else Tap. On release the classified gesture is
+  the single decision point: Tap → `Place++`; Hold (or already mining) → just end Mining;
+  Look → nothing (pure look).
 - `HoldMs` is the only public calibration knob the scenario sets: 60000 for the tap check
   (a release can never be a hold, so it is always a Tap), 0 for the hold check (fires next
   frame). No wall-clock assertion anywhere. Justification: holding past `HoldMs` *is* the
@@ -129,9 +129,18 @@ a consumer reads is listed above, so nothing else is needed.
 - Mutation proof list. Each mutation must be run and its **raw `scenario touch: FAIL ...`
   line quoted verbatim** in the phase-2 report and pasted into this section — that quote is
   the only evidence the assertions can fail:
-  - flip the drag sign → `drag-yaw` red
-  - force `Classify` to Look → `tap`/`hold` red
-  - drop the `Wish` merge → `stick` red
+  - flip the drag sign → `drag-yaw` red:
+    `scenario touch: FAIL drag-yaw: Yaw=0.44 expected -0.44`
+  - force `Classify` to Look → `tap`/`hold` red. The scenario reports only the first
+    failure, so each layer was exposed with the earlier checks temporarily neutralised in
+    the working tree only (all restored; `git diff` clean afterwards):
+    `scenario touch: FAIL classify: 100ms/5px -> Tap`
+    `scenario touch: FAIL tap-place: Place=0`
+    `scenario touch: FAIL hold-mine: Mining not set after HoldMs=0`
+  - drop the `Wish` merge → `stick` red:
+    `scenario touch: FAIL stick: Wish.Z=0`
+
+  All runs exited 1 (lead-24, worktree `Regress-touch`, 2026-09-23).
 
 ## 7. Evidence ceiling
 
@@ -170,7 +179,9 @@ All eight questions are decided; nothing here is open.
 
 ## 9. File inventory (phase-2 diff)
 
-- New: `src/TouchControls.cs` (241 lines), `src/TouchTest.cs` (263 lines).
+- New: `src/TouchControls.cs` (242 lines), `src/TouchTest.cs` (263 lines), plus the
+  generated `src/TouchControls.cs.uid` / `src/TouchTest.cs.uid` (tracked like every other
+  script uid).
 - Edits: `src/Game.cs` +13, `src/Player.cs` +3/-1, `src/PlayerSystems.cs` +13/-4,
   `tools/run_game_tests.py` +8 (one `SCENARIOS` entry), `docs/touch.md`,
   `docs/testing.md` (+1 scenario-table row).

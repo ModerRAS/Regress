@@ -41,8 +41,8 @@ public partial class TouchControls : CanvasLayer
 		look.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		look.AnchorLeft = 0.5f;
 		look.MouseFilter = Control.MouseFilterEnum.Stop;
-		var hint = new Label { Name = "LookHint", Text = "look", Position = new Vector2(24, 18) };
-		hint.AddThemeColorOverride("font_color", new Color(1, 1, 1, 0.5f));
+		var hint = new Label { Name = "LookHint", Text = "look", Position = new Vector2(24, 64) };
+		hint.AddThemeColorOverride("font_color", new Color(1, 1, 1, 0.85f));
 		look.AddChild(hint);
 		AddChild(look);
 
@@ -238,5 +238,5 @@ public partial class TouchLook : Control
 	}
 
 	public override void _Draw() =>
-		DrawRect(new Rect2(Vector2.One * 2f, Size - Vector2.One * 4f), new Color(1, 1, 1, 0.18f), false, 2f);
+		DrawRect(new Rect2(Vector2.One * 2f, Size - Vector2.One * 4f), new Color(1, 1, 1, 0.35f), false, 2f);
 }
