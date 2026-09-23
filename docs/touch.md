@@ -12,13 +12,7 @@ Scope: a touch adapter that feeds the existing input contract. Nothing else.
 
 ## 2. Input contract
 
-The full set of fields touch drives. Line numbers cite `master@ba8e162` — `src/PlayerSystems.cs`
-independently verified by worker-48, `src/Player.cs` by worker-49.
-
-**Phase 2's first action is to re-pin these line numbers.** After `feat/scale-64` merges, re-run
-the greps against the merged master for `src/PlayerSystems.cs` / `src/Game.cs` / `src/Blocks.cs`
-and update this table **before any `src/**` edit** — the scale-64 merge shifts
-`PlayerSystems.cs` and `Game.cs` lines.
+The full set of fields touch drives. Line numbers cite `master@15b0605` (scale-64 merged).
 
 | Field | Def | Writer | Consumer |
 |---|---|---|---|
@@ -29,11 +23,11 @@ and update this table **before any `src/**` edit** — the scale-64 merge shifts
 | `PlayerIntent.Jump` / `.Up` / `.Down` | `src/PlayerSystems.cs:49` | `src/PlayerSystems.cs:110-112` | `src/PlayerSystems.cs:151-153` (Up/Down), `:161` (Jump) |
 | `PlayerIntent.Mining` | `src/PlayerSystems.cs:52` | `src/PlayerSystems.cs:114-115` | `src/PlayerSystems.cs:185` |
 | `PlayerIntent.Place` | `src/PlayerSystems.cs:55` | `src/Player.cs:71` | `src/PlayerSystems.cs:342-345` |
-| `PlayerIntent.RotateNext` / `.RotatePrev` | `src/PlayerSystems.cs:58` | `src/PlayerSystems.cs:117-122` (edge-queued at `:119-120`) | `src/PlayerSystems.cs:267`, applied in `Rotate` `:250-252`, cleared `:284-285` |
+| `PlayerIntent.RotateNext` / `.RotatePrev` | `src/PlayerSystems.cs:58` | `src/PlayerSystems.cs:117-122` (edge-queued at `:119-120`) | `src/PlayerSystems.cs:267`, applied in `Rotate` `:251-253`, cleared `:284-285` |
 
 Struct declarations: `PlayerState` `:16`, `PlayerIntent` `:46` (`RotateNextHeld`/`RotatePrevHeld`
 `:62`, `AutoWalk`/`AutoSprint`/`AutoMine` `:65`). Movement/look consumers: `Move` `:149-161`,
-`Mine` `:185`, `Look` `:133-134`, raycasts `:391` and `:410-411`.
+`Mine` `:185`, `Look` `:133-134`, `Raycast` call sites `:366` and `:380` (helper `:449`).
 
 `Wish` / `Jump` / `Up` / `Down` / `Sprint` / `Mining` are clobbered every frame by `PollInput`
 (`:109-115`), which is exactly why the touch merge state lives inside `PollInput`. `Place` and
@@ -97,8 +91,10 @@ a consumer reads is listed above, so nothing else is needed.
 - New `src/TouchControls.cs` with static merge state (`Move`, `Jump`, `Down`, `Mining`)
   consumed by `PollInput`. `PollInput` stays the only place that reads `Input`.
 - Event-driven writes for `Yaw` / `Pitch` / `Selected` / `Flying` / `Place`.
-- When touch UI is active, `Player._UnhandledInput` (`src/Player.cs:56`) early-returns
-  (one path, no double handling) and the mouse is NOT captured (`SetMouseCaptured`,
+- When touch UI is active, `Player._UnhandledInput` (`src/Player.cs:56`) returns early for
+  mouse events only (`if (TouchControls.Active && @event is InputEventMouse) return; // touch
+  drives look/place; the emulated mouse must not double-handle it`). Keyboard stays live on
+  hybrid touchscreen desktops (Escape/1-9/F/G/R). The mouse is NOT captured (`SetMouseCaptured`,
   `src/Player.cs:53-54`).
 - `Input.EmulateMouseFromTouch = false` when touch is active. Godot synthesizes emulated
   mouse events from real touches — this kills the Android double-rotation trap.
@@ -111,12 +107,9 @@ a consumer reads is listed above, so nothing else is needed.
 
 `--touchtest` scenario, new `src/TouchTest.cs`:
 
-- `ProcessPriority = 1` so it runs after `Game._Process` (`src/Game.cs:100-119`).
+- `ProcessPriority = 1` so it runs after `Game._Process` (`src/Game.cs:100-203`).
 - Frame-scripted injection at real node rects, no wall-clock assertions.
-- **Phase-2 gate — resolve before writing the scenario:** confirm that headless
-  `Viewport.PushInput` reaches `Control._GuiInput`. If it does not, use the fallback
-  `Input.ParseInputEvent`. Record the outcome here and in the phase-2 report:
-  `injection: <PushInput|ParseInputEvent> (<why>)`. Neither is established until run.
+- `injection: PushInput (Viewport.PushInput(ev, true); headless down/drag/up reach Control._GuiInput, verified 4.7.2). Gesture checks inject at the HUD's real rects; button checks re-lay the 14 buttons into a 64x64 test grid first (headless viewport is 64x64 and --resolution is ignored there). The HUD's pixel layout is NOT verified headless — only by the tier-B --touch screenshot.`
 - Checks: `hud` / `stick` / `stick-release` / `drag-yaw` / `tap-place` / `hold-mine`
   (+ real block break in Creative) / `jump` / `fly` / `hotbar` / `classify` (pure
   function).
@@ -175,9 +168,10 @@ All eight questions are decided; nothing here is open.
 | Hotbar row vs cycle | **Row of 9 buttons** — landscape is locked, the width is there; no cycle key (dead configuration). |
 | Android landscape lock | **Already done by lead-20** — `window/handheld/orientation=4` in `project.godot`; `export_presets.cfg` untouched. |
 
-## 9. File inventory + phase-2 diff budget
+## 9. File inventory (phase-2 diff)
 
-- New: `src/TouchControls.cs`, `src/TouchTest.cs`
-- Edits: `src/Game.cs` ~8 lines, `src/Player.cs` ~3, `src/PlayerSystems.cs` ~6,
-  `tools/run_game_tests.py` +1 entry, `docs/touch.md`
-- Optional: `docs/testing.md` scenario-table row
+- New: `src/TouchControls.cs` (241 lines), `src/TouchTest.cs` (263 lines).
+- Edits: `src/Game.cs` +13, `src/Player.cs` +3/-1, `src/PlayerSystems.cs` +13/-4,
+  `tools/run_game_tests.py` +8 (one `SCENARIOS` entry), `docs/touch.md`,
+  `docs/testing.md` (+1 scenario-table row).
+- No new dependencies, no `project.godot`, no `export_presets.cfg`, no `Regress.csproj` change.

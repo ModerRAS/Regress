@@ -49,6 +49,14 @@ SCENARIOS = [
         markers=["bench landing PASS"],
         exit=0,
     ),
+    # tier A: touch adapter intent checks (headless, real touch events via Viewport.PushInput).
+    dict(
+        name="touch",
+        tier="A",
+        argv=["--headless", "--path", ".", "--", "--touchtest"],
+        markers=["scenario touch: PASS"],
+        exit=0,
+    ),
     # tier B: needs a real renderer; never wired into CI.
     dict(
         name="shot",

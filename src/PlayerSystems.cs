@@ -106,13 +106,18 @@ public static class PlayerSystems
 			if (Input.IsKeyPressed(Key.A)) wish -= yaw.X;
 			if (Input.IsKeyPressed(Key.D)) wish += yaw.X;
 
+			// Touch state is merged here because PollInput clobbers these fields every frame.
+			if (TouchControls.Active)
+				wish += yaw.X * TouchControls.Move.X + yaw.Z * TouchControls.Move.Y;
+
 			intent.Wish = wish.Normalized();
-			intent.Jump = Input.IsKeyPressed(Key.Space);
-			intent.Up = Input.IsKeyPressed(Key.Space);
-			intent.Down = Input.IsKeyPressed(Key.Ctrl);
+			intent.Jump = Input.IsKeyPressed(Key.Space) || TouchControls.Jump;
+			intent.Up = Input.IsKeyPressed(Key.Space) || TouchControls.Jump;
+			intent.Down = Input.IsKeyPressed(Key.Ctrl) || TouchControls.Down;
 			intent.Sprint = intent.AutoSprint || Input.IsKeyPressed(Key.Shift);
 			intent.Mining = intent.AutoMine
-				|| (Input.MouseMode == Input.MouseModeEnum.Captured && Input.IsMouseButtonPressed(MouseButton.Left));
+				|| (Input.MouseMode == Input.MouseModeEnum.Captured && Input.IsMouseButtonPressed(MouseButton.Left))
+				|| TouchControls.Mining;
 
 			bool rotateNext = Input.IsKeyPressed(Key.Q);
 			bool rotatePrev = Input.IsKeyPressed(Key.E);
