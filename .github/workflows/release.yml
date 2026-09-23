@@ -367,7 +367,9 @@ jobs:
           fi
           set +e
           xcodebuild -list -project "$PROJ" 2>&1 | tee /tmp/ios_list.log
-          SCHEME=$(awk '/Schemes:/{f=1;next} f && NF {print; exit}' /tmp/ios_list.log)
+          # $1 drops the leading indentation of the scheme line: run 35839335298 extracted
+          # "        Regress" and xcodebuild then failed with "does not contain a scheme named ...".
+          SCHEME=$(awk '/Schemes:/{f=1;next} f && NF {print $1; exit}' /tmp/ios_list.log)
           if [ -z "$SCHEME" ]; then
             SCHEME=$(basename "$PROJ" .xcodeproj)
           fi
@@ -375,7 +377,17 @@ jobs:
           xcodebuild -project "$PROJ" -scheme "$SCHEME" -sdk iphoneos -configuration Release \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            -derivedDataPath /tmp/iosdd build > /tmp/ios_build.log 2>&1
+            -derivedDataPath /tmp/iosdd build > /tmp/ios_build.log 2>&1 &
+          PID=$!
+          for i in $(seq 1 240); do kill -0 "$PID" 2>/dev/null || break; sleep 5; done
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "IOS_XCODEBUILD_PROBE=FAIL (timeout after 1200s)"
+            ps -ef | head -40
+            echo "--- ios_build.log tail ---"; tail -n 80 /tmp/ios_build.log || true
+            kill -9 "$PID" 2>/dev/null || true
+            exit 0
+          fi
+          wait "$PID"
           RC=$?
           tail -n 60 /tmp/ios_build.log
           if [ $RC -eq 0 ]; then

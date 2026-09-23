@@ -236,6 +236,14 @@ The workflow prints the actual `build/ios` shape before packaging and zips whate
 printed as `MACOS_ARCHES=<archs>`; the Xcode probe prints `IOS_XCODEBUILD_PROBE=PASS|FAIL` and
 never fails the job.
 
+Run 35839335298 reported `IOS_XCODEBUILD_PROBE=FAIL`, but that was **our probe script's bug, not
+an iOS result**: the scheme name was extracted with its leading indentation (`        Regress`),
+so xcodebuild exited with `The project named "Regress" does not contain a scheme named ...` and
+the real build never ran. The probe now trims the scheme (`awk ... {print $1}`) and runs the
+build under a 1200-second watchdog that prints `ps -ef` and the build-log tail, reports
+`IOS_XCODEBUILD_PROBE=FAIL (timeout)` and stays non-fatal. Until a run completes the probe,
+**iOS buildability remains unverified**.
+
 Artifacts (bundle `Regress-apple`): `Regress-macos-universal.zip`,
 `Regress-ios-xcodeproj.zip`.
 
@@ -261,7 +269,8 @@ release API).
   @ `4.7.2-stable` lines 178-181 and 1674-1675) and we have no Apple credentials; a user must
   replace it with their own team id to sign/build. Whether Xcode can build it is exactly what
   `IOS_XCODEBUILD_PROBE` says: `PASS` = buildable but unsigned; `FAIL` or not run = buildability
-  not verified (**it has not run yet**). Never claim it "should build".
+  not verified (**the one FAIL so far was a probe-script bug — the real build never ran — so
+  there is still no real result**). Never claim it "should build".
 - macOS/Windows/Linux artifacts are unsigned and not notarized.
 - macOS architecture: `MACOS_ARCHES=<lipo -archs>` is the evidence. The preset requests
   `binary_format/architecture="universal"`, but only `lipo` shows what the template really
