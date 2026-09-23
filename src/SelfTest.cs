@@ -1403,9 +1403,11 @@ public static class SelfTest
         Check(meshWrong == 0, $"the ghost's own mesh equals BuildBlock over 3 orientations ({meshWrong} mismatched)");
         Check(transformWrong == 0, $"the ghost transform is a pure translation to the cell ({transformWrong} wrong)");
 
-        bool translucent = ghost.Mesh.MaterialOverride is ShaderMaterial material
-            && material.GetShaderParameter("alpha_scale").AsSingle() < 1f;
-        Check(translucent, "the ghost draws through the duplicated translucent material (alpha_scale < 1)");
+        var ghostMaterial = ghost.Mesh.MaterialOverride as ShaderMaterial;
+        Check(ghostMaterial != null && !ReferenceEquals(ghostMaterial, VoxelWorld.ChunkMaterial),
+            "the ghost draws through its own material instance, not the chunk material");
+        Check(ghostMaterial != null && ghostMaterial.Shader != VoxelWorld.ChunkMaterial.Shader,
+            "the ghost uses the transparent ghost shader, not the chunk shader");
 
         // -- hidden when the click would be refused, visible otherwise -------
         ghost.Update(world, null, Block.Stone, Orientation.None);

@@ -55,6 +55,9 @@ public partial class VoxelWorld : Node3D
     private static Texture2DArray _tiles;
     private static ShaderMaterial _ghostMaterial;
 
+    /// <summary>The shared chunk material. Public so the ghost's own instance can be told apart.</summary>
+    public static ShaderMaterial ChunkMaterial => Material;
+
     /// <summary>Injects the loaded tile array into the shared chunk material.</summary>
     public static void UseTiles(Texture2DArray tiles)
     {
@@ -62,17 +65,20 @@ public partial class VoxelWorld : Node3D
         Material.SetShaderParameter("tiles", tiles);
     }
 
-    /// <summary>Translucent copy of the chunk material for the placement preview. Created lazily,
-    /// so a run that never shows a ghost never pays for it. The chunk path keeps using Material.</summary>
+    /// <summary>Translucent copy of the chunk tiles for the placement preview. Created lazily,
+    /// so a run that never shows a ghost never pays for it. Deliberately a different shader:
+    /// the chunk shader writes ALPHA_SCISSOR_THRESHOLD, which forces the opaque alpha-tested
+    /// pipeline and ignores ALPHA.</summary>
     public static ShaderMaterial GhostMaterial
     {
         get
         {
             if (_ghostMaterial == null)
             {
-                _ghostMaterial = (ShaderMaterial)Material.Duplicate();
-                _ghostMaterial.SetShaderParameter("alpha_scale", 0.5f);
-                _ghostMaterial.SetShaderParameter("albedo_scale", 0.75f);
+                _ghostMaterial = new ShaderMaterial
+                {
+                    Shader = GD.Load<Shader>("res://src/ghost_tiles.gdshader"),
+                };
                 if (_tiles != null) _ghostMaterial.SetShaderParameter("tiles", _tiles);
             }
             return _ghostMaterial;

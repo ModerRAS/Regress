@@ -128,7 +128,7 @@ per chunk), bounded by time budgets rather than chunk counts. Details and number
 
 | flag | what it does |
 | --- | --- |
-| `--selftest` | 171 headless assertions: terrain, mesher cross-checked against brute force, triangle winding, vertical-world invariants, break/place request pipeline, tree felling, per-world terrain, placement preview (ghost, rotate keys, sticky memory) |
+| `--selftest` | 172 headless assertions: terrain, mesher cross-checked against brute force, triangle winding, vertical-world invariants, break/place request pipeline, tree felling, per-world terrain, placement preview (ghost, rotate keys, sticky memory) |
 | `--demo` | drives the player without a keyboard: walk, place, then mine straight down 63 blocks to bedrock, asserting they stay on solid ground |
 | `--bench` | five-phase performance run; `--frozen` measures the engine floor, `--view=` / `--collision=` / `--budget=` sweep |
 | `--shot=path.png` | render N frames, save a PNG, quit |
