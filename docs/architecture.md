@@ -4,18 +4,19 @@ Regress is an ECS (Friflo.Engine.ECS) voxel sandbox on Godot 4.7 / .NET 8. This 
 describes the entity, component and system design, and — more usefully — the boundaries between
 them and the ones that were deliberately not drawn.
 
-## Entities: three kinds
+## Entities: four kinds
 
 | entity | count | created by | lifetime |
 | --- | --- | --- | --- |
 | **chunk entity** | ~230 resident | `VoxelWorld.CreateChunk`, driven by the streaming system | enters and leaves the view distance |
 | **player entity** | exactly 1 | `Player._Ready` | never destroyed, never changes archetype |
 | **mob entity** | ≤ 48 (`MobSystems.MaxMobs`) | `MobSpawner` (factory), one per planned surface cell | spawns on a ring around `Focus`, despawns past `DespawnRadius` or below `BedrockY - 16` |
+| **block entity** | one per interactive block that is placed | `BlockEntityRegistry.Sync`, called from `VoxelWorld.SetBlock` | deleted when its byte stops being interactive, or when its chunk unloads |
 
 There is no entity hierarchy, no relation and no prefab. `ChunkCoord` is 3D, so chunk Y is
 unbounded.
 
-## Components: eleven data types, five tags
+## Components: fourteen data types, five tags
 
 ```csharp
 // chunk: data
@@ -45,6 +46,11 @@ struct MobVisual   { MeshInstance3D Node; }
 
 // mob: tag
 struct Mob : ITag { }
+
+// block entity: data
+struct BlockPos     { int X, Y, Z; }             // position-keyed identity; the entity carries its own cell
+struct Interactable { InteractKind Kind; }       // the RMB dispatch key (None, Toggle)
+struct ToggleState  { bool Open; }               // per-instance state, never in the 4096-byte arrays
 ```
 
 `ChunkBlocks.Orientation` is the 24-element cube rotation group: every block stores one, a block
@@ -77,6 +83,19 @@ Two component details are deliberate deviations from "keep components blittable"
   (`PlayerBody` holds the player node and camera; `PlayerIntent.Wish` and `PlayerMining.Target`
   are engine value types). It is a *handle*, never game state: no system reads gameplay facts out
   of it.
+
+### Block entities: interactive blocks are entities
+
+The chunk byte array stays authoritative for terrain and rendering. An interactive block is a
+position-keyed entity carrying `BlockPos` + `Interactable` + a per-kind state component
+(`ToggleState` for `Plank`); instance state never enters the 4096-byte arrays. Lookup is two
+dictionary probes — chunk bucket, then cell — never a scan. `VoxelWorld.SetBlock` is the ONE choke
+point that reconciles the two sides, so they cannot disagree, and `BlockEntityRegistry.Audit`
+checks both directions. RMB ordering is decided by the pure `PlayerSystems.RightClickAction`
+(Interact > Place) and used by `RequestPlaceAtCrosshair`, whose placement rules are otherwise
+unchanged. No new system was needed — the sync lives in `SetBlock` and dispatch in the existing
+build step — so the system counts in this document do not move. Phase A carries the mechanism on
+`Block.Plank`; `Block.Chest` is Phase B.
 
 ## Systems: four chunk systems, five player systems, three mob systems
 
@@ -190,7 +209,7 @@ Gameplay never mutates the world; it proposes an edit and the world decides.
 
 ```
   LMB held ──► PlayerIntent.Mining ──► Mine (S) ──► RequestEdit(Break, cell)
-  RMB click ─► PlayerIntent.Place  ──► Build (S) ─► RequestEdit(Place, cell, block)
+  RMB click ─► PlayerIntent.Place  ──► Build (S) ─► interactable target? interact : RequestEdit(Place, ...)
                                                           │
                           ApplyPendingEdits()  (top of the next frame, before meshing)
                                                           │
@@ -204,7 +223,7 @@ Gameplay never mutates the world; it proposes an edit and the world decides.
 - **`Blocks.HardnessOf`** gives seconds to break by hand (negative = unbreakable). `PlayerMining`
   accumulates `delta / hardness` on the crosshair block and only emits a request at 1.0.
 - **Placement legality lives in exactly one function**, `PlayerSystems.RequestPlaceAtCrosshair`,
-  called by both the interactive and the scripted path.
+  called by both the interactive and the scripted path: `RMB click -> Build -> interactable target? interact : RequestEdit(Place, ...)`.
 - Requests are applied before meshing in the same frame, so a multi-block break across chunk
   borders is just N `MarkDirty` calls that the existing systems already handle.
 

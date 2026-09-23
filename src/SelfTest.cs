@@ -209,6 +209,8 @@ public static class SelfTest
         CheckMesherTextureArrays(world);
         CheckMesherOrientation(world);
         CheckPlacementPreview(world);
+        // ---- block entities (interactive blocks) ------
+        CheckBlockEntities(world);
         CheckMobs(world);
 
         return _failures;
@@ -1880,5 +1882,220 @@ public static class SelfTest
     {
         GD.Print(condition ? $"  ok    {what}" : $"  FAIL  {what}");
         if (!condition) _failures++;
+    }
+    /// <summary>Interactive blocks: the chunk byte array stays authoritative and the entity
+    /// side is reconciled at the single write choke point. Deltas and a far-away region only,
+    /// because earlier sections already placed planks near the spawn.</summary>
+    private static void CheckBlockEntities(VoxelWorld world)
+    {
+        GD.Print("  ---- block entities ----");
+        var registry = world.BlockEntities;
+
+        const int bx = 40000, by = 3000, bz = 40000;
+        var cell = new Vector3I(bx, by, bz);
+        var chunkA = VoxelWorld.ChunkKeyOf(bx, by, bz);
+        var chunkB = VoxelWorld.ChunkKeyOf(bx + 16, by, bz);
+
+        static int VisitCount(BlockEntityRegistry r)
+        {
+            int n = 0;
+            r.Visit((_, _) => n++);
+            return n;
+        }
+
+        // 1. predicate/table ---------------------------------------------------
+        Check(BlockInteractions.IsInteractable(Block.Plank) && BlockInteractions.KindOf(Block.Plank) == InteractKind.Toggle,
+            "Plank is interactive and its dispatch kind is Toggle");
+        Check(!BlockInteractions.IsInteractable(Block.Stone) && !BlockInteractions.IsInteractable(Block.Air),
+            "Stone and Air are not interactive");
+
+        // 2. the real request pipeline creates the entity ----------------------
+        world.RequestEdit(EditRequest.Place(cell, Block.Plank, default));
+        Check(world.ApplyPendingEdits() == 1, "a plank place request through the pipeline is applied");
+        Check(registry.Contains(cell), "the placed plank has a block entity");
+        bool hasEntity = registry.TryGet(cell, out var plankEntity);
+        Check(hasEntity && plankEntity.GetComponent<BlockPos>().Vector == cell
+              && plankEntity.GetComponent<Interactable>().Kind == InteractKind.Toggle,
+            "the entity carries its cell in BlockPos and the Toggle dispatch key");
+
+        // 3. non-interactive blocks cost nothing -------------------------------
+        int countBefore = registry.Count, bucketsBefore = registry.ChunkBucketCount, visitedBefore = VisitCount(registry);
+        var plainCell = new Vector3I(bx + 16, by, bz);
+        world.SetBlock(plainCell.X, plainCell.Y, plainCell.Z, Block.Stone);
+        world.SetBlock(plainCell.X, plainCell.Y, plainCell.Z + 1, Block.Dirt);
+        world.SetBlock(plainCell.X, plainCell.Y, plainCell.Z, Block.Air); // Air write over a byte with history
+        Check(registry.Count == countBefore && registry.ChunkBucketCount == bucketsBefore && VisitCount(registry) == visitedBefore,
+            $"non-interactive blocks create no entity ({registry.Count} entities, {registry.ChunkBucketCount} buckets unchanged)");
+        Check(!registry.Contains(plainCell) && !registry.Contains(plainCell + new Vector3I(0, 0, 1)),
+            "no entity for a Stone/Dirt/Air cell");
+
+        // 4. breaking removes the entity ---------------------------------------
+        int visitedBeforeBreak = VisitCount(registry);
+        int bucketsBeforeBreak = registry.ChunkBucketCount;
+        world.SetBlock(cell.X, cell.Y, cell.Z, Block.Air);
+        Check(!registry.Contains(cell) && VisitCount(registry) == visitedBeforeBreak - 1,
+            "breaking the plank removes its block entity");
+        Check(registry.ChunkBucketCount == bucketsBeforeBreak - 1, "the emptied chunk bucket is gone, not stale");
+
+        // ...and the same once more through the request pipeline.
+        var pipeCell = new Vector3I(bx + 2, by, bz);
+        world.RequestEdit(EditRequest.Place(pipeCell, Block.Plank, default));
+        world.ApplyPendingEdits();
+        Check(registry.Contains(pipeCell), "a pipeline place recreates the entity");
+        world.RequestEdit(EditRequest.Break(pipeCell, default));
+        Check(world.ApplyPendingEdits() == 1, "a break request through the pipeline is applied");
+        Check(!registry.Contains(pipeCell), "the pipeline break dropped the entity too");
+
+        // 5. two-way invariant over deterministic random edits ------------------
+        uint rng = 0x5EED2024u;
+        for (int i = 0; i < 200; i++)
+        {
+            rng = rng * 1664525u + 1013904223u;
+            int chunkOffset = (int)(rng & 1u);
+            int lx = (int)((rng >> 8) & 15u);
+            int lz = (int)((rng >> 20) & 15u);
+            int pick = (int)((rng >> 16) % 3u);
+            var block = pick == 0 ? Block.Plank : pick == 1 ? Block.Stone : Block.Air;
+            var random = new Vector3I(bx + chunkOffset * 16 + lx, by, bz + lz);
+            world.SetBlock(random.X, random.Y, random.Z, block);
+        }
+        var touched = new List<Vector3I> { chunkA, chunkB };
+        registry.Audit(world, touched, out int bytesWithoutEntity, out int entitiesWithoutByte);
+        Check(bytesWithoutEntity == 0 && entitiesWithoutByte == 0,
+            $"audit agrees after 200 random edits (bytesWithoutEntity={bytesWithoutEntity}, entitiesWithoutByte={entitiesWithoutByte})");
+
+        // A second, non-Audit opinion: count the interactive bytes by hand.
+        int byHand = 0;
+        for (int x = bx; x < bx + 32; x++)
+            for (int y = by; y < by + 16; y++)
+                for (int z = bz; z < bz + 16; z++)
+                    if (BlockInteractions.IsInteractable(world.GetBlock(x, y, z))) byHand++;
+        int visitedRegion = 0;
+        registry.Visit((c, _) =>
+        {
+            if (c.X >= bx && c.X < bx + 32 && c.Y >= by && c.Y < by + 16 && c.Z >= bz && c.Z < bz + 16) visitedRegion++;
+        });
+        Check(byHand == visitedRegion, $"hand count of interactive cells matches the registry ({byHand} vs {visitedRegion})");
+
+        // 6. the audit can fail -------------------------------------------------
+        var rawCell = new Vector3I(bx + 64, by, bz);
+        world.SetBlock(rawCell.X, rawCell.Y, rawCell.Z, Block.Stone);
+        bool haveRawChunk = world.TryGetChunk(rawCell.X, rawCell.Y, rawCell.Z, out var rawChunk);
+        Check(haveRawChunk, "the raw-audit chunk is loaded");
+        if (haveRawChunk)
+        {
+            var rawKey = VoxelWorld.ChunkKeyOf(rawCell.X, rawCell.Y, rawCell.Z);
+            var bytes = rawChunk.GetComponent<ChunkBlocks>().Value;
+            int rawIndex = ChunkBlocks.Index(rawCell.X - rawKey.X * VoxelWorld.ChunkSize,
+                rawCell.Y - rawKey.Y * VoxelWorld.ChunkSize, rawCell.Z - rawKey.Z * VoxelWorld.ChunkSize);
+            bytes[rawIndex] = (byte)Block.Plank; // bypasses SetBlock: the entity side is deliberately not synced
+            registry.Audit(world, new[] { rawKey }, out int rawBytes, out int rawEntities);
+            Check(rawBytes == 1 && rawEntities == 0,
+                $"a raw plank byte with no entity is caught (bytesWithoutEntity={rawBytes}, entitiesWithoutByte={rawEntities})");
+            bytes[rawIndex] = (byte)Block.Stone;
+            registry.Audit(world, new[] { rawKey }, out rawBytes, out rawEntities);
+            Check(rawBytes == 0 && rawEntities == 0, "restoring the byte restores the clean audit");
+        }
+
+        // 7. O(1) lookup: a 513-entity chunk plus a 1-entity neighbour ----------
+        // BlockEntityRegistry.TryGet is bucket[chunkKey] then cell - two dictionary probes, never a scan.
+        var bigBase = new Vector3I(bx + 32, by, bz);
+        for (int i = 0; i < 512; i++)
+            world.SetBlock(bigBase.X + (i & 15), bigBase.Y + (i >> 8), bigBase.Z + ((i >> 4) & 15), Block.Plank);
+        var loneCell = new Vector3I(bx + 48, by, bz);
+        world.SetBlock(loneCell.X, loneCell.Y, loneCell.Z, Block.Plank);
+
+        int probes = registry.Probes;
+        bool hitBig = registry.TryGet(new Vector3I(bigBase.X + 5, bigBase.Y, bigBase.Z + 5), out _);
+        int probesBig = registry.Probes - probes;
+        probes = registry.Probes;
+        bool hitLone = registry.TryGet(loneCell, out _);
+        int probesLone = registry.Probes - probes;
+        Check(hitBig && hitLone && probesBig == probesLone && probesBig <= 2,
+            $"512-entity and 1-entity buckets cost the same {probesBig}/{probesLone} dictionary probes (Count={registry.Count})");
+
+        // 8. RMB precedence is pure and headless --------------------------------
+        var plainLoaded = rawCell; // Stone, no entity
+        Check(PlayerSystems.RightClickAction(world, true, loneCell, true) == ClickAction.Interact,
+            "RMB on an interactive block interacts instead of placing (target + placement)");
+        Check(PlayerSystems.RightClickAction(world, true, plainLoaded, true) == ClickAction.Place,
+            "RMB on a plain block still places (target + placement)");
+        Check(PlayerSystems.RightClickAction(world, true, loneCell, false) == ClickAction.Interact,
+            "RMB on an interactive block interacts even with no placement cell");
+        Check(PlayerSystems.RightClickAction(world, true, plainLoaded, false) == ClickAction.None,
+            "RMB on a plain block with no placement cell does nothing");
+        Check(PlayerSystems.RightClickAction(world, false, default, true) == ClickAction.Place,
+            "RMB with no target still places when a placement cell exists");
+
+        // 9. interaction behaviour ----------------------------------------------
+        var toggleCell = new Vector3I(bx + 49, by, bz);
+        world.SetBlock(toggleCell.X, toggleCell.Y, toggleCell.Z, Block.Plank);
+        BlockInteractions.Reset();
+        int version = BlockInteractions.Version;
+        bool interacted = BlockInteractions.Interact(world, toggleCell, default);
+        bool openFirst = registry.TryGet(toggleCell, out var toggleEntity) && toggleEntity.GetComponent<ToggleState>().Open;
+        Check(interacted && openFirst, "interacting returns true and flips ToggleState.Open on");
+        Check(world.GetBlock(toggleCell.X, toggleCell.Y, toggleCell.Z) == Block.Plank,
+            "interacting leaves the block byte untouched");
+        Check(BlockInteractions.Message != null && BlockInteractions.Message.Contains("Plank"),
+            $"the HUD message names the block (\"{BlockInteractions.Message}\")");
+        int versionAfterFirst = BlockInteractions.Version;
+        Check(versionAfterFirst > version, $"the interaction bumped Version ({version} -> {versionAfterFirst})");
+
+        BlockInteractions.Interact(world, toggleCell, default);
+        bool closed = registry.TryGet(toggleCell, out toggleEntity) && !toggleEntity.GetComponent<ToggleState>().Open;
+        Check(closed && BlockInteractions.Version > versionAfterFirst,
+            "interacting again closes the toggle and bumps Version again");
+
+        var emptyCell = new Vector3I(bx + 50, by, bz);
+        Check(world.GetBlock(emptyCell.X, emptyCell.Y, emptyCell.Z) == Block.Air, "the neighbour cell starts as air");
+        Check(!BlockInteractions.Interact(world, emptyCell, default),
+            "interacting with a cell that has no entity returns false, so the click falls through to placement");
+        Check(world.GetBlock(emptyCell.X, emptyCell.Y, emptyCell.Z) == Block.Air && !registry.Contains(emptyCell),
+            "the neighbouring placement cell is still Air with no entity");
+
+        // 10. DropChunk (chunk unload) ------------------------------------------
+        var dropA = new Vector3I(bx + 65, by, bz);
+        var dropB = new Vector3I(bx + 66, by, bz);
+        world.SetBlock(dropA.X, dropA.Y, dropA.Z, Block.Plank);
+        world.SetBlock(dropB.X, dropB.Y, dropB.Z, Block.Plank);
+        Check(registry.Contains(dropA) && registry.Contains(dropB), "two planks in one chunk have entities");
+        int bucketsBeforeDrop = registry.ChunkBucketCount;
+        registry.DropChunk(world.Store, VoxelWorld.ChunkKeyOf(dropA.X, dropA.Y, dropA.Z));
+        Check(!registry.Contains(dropA) && !registry.Contains(dropB), "DropChunk removes every entity of the chunk");
+        Check(registry.ChunkBucketCount == bucketsBeforeDrop - 1, "DropChunk removes the chunk bucket");
+
+        // DropChunk is only correct when the chunk entity itself is going away, which is what
+        // unload does. The bytes here are still Plank, and a plain re-place is a no-op write,
+        // so clear the byte first to make the re-place a real transition.
+        world.SetBlock(dropA.X, dropA.Y, dropA.Z, Block.Air);
+        world.SetBlock(dropA.X, dropA.Y, dropA.Z, Block.Plank);
+        world.SetBlock(dropB.X, dropB.Y, dropB.Z, Block.Air);
+        world.SetBlock(dropB.X, dropB.Y, dropB.Z, Block.Plank);
+        Check(registry.Contains(dropA) && registry.Contains(dropB),
+            "re-placing restores the entities, so the world is left consistent");
+
+        // 11. isolated cost, no GPU involved -------------------------------------
+        var cycleCell = new Vector3I(bx + 67, by, bz);
+        var plainCycleCell = new Vector3I(bx + 68, by, bz);
+        Check(world.GetBlock(cycleCell.X, cycleCell.Y, cycleCell.Z) == Block.Air, "the cycle cell starts as air");
+        int entitiesBeforeCycles = registry.Count;
+        ulong started = Time.GetTicksUsec();
+        for (int i = 0; i < 2000; i++)
+        {
+            world.SetBlock(cycleCell.X, cycleCell.Y, cycleCell.Z, Block.Plank);
+            world.SetBlock(cycleCell.X, cycleCell.Y, cycleCell.Z, Block.Air);
+        }
+        ulong elapsedUs = Time.GetTicksUsec() - started;
+        int afterCycles = registry.Count;
+        int leftOver = afterCycles - entitiesBeforeCycles;
+        for (int i = 0; i < 2000; i++)
+        {
+            world.SetBlock(plainCycleCell.X, plainCycleCell.Y, plainCycleCell.Z, Block.Stone);
+            world.SetBlock(plainCycleCell.X, plainCycleCell.Y, plainCycleCell.Z, Block.Air);
+        }
+        int plainLeft = registry.Count - afterCycles;
+        Check(leftOver == 0 && plainLeft == 0 && elapsedUs < 5_000_000,
+            $"ok  block entity: 2000 place+break cycles in {elapsedUs / 1000.0:F1} ms ({elapsedUs / 2000.0:F2} us/cycle), {leftOver} entities left; 2000 non-interactive placements left {plainLeft}");
     }
 }
