@@ -38,6 +38,8 @@ SCENARIOS = [
         # "DIGDOWN FAIL", so none of these markers is satisfiable by a FAIL run.
         markers=["walk: PASS", "interact: PASS", " -> PASS", "DIGDOWN PASS"],
         exit=0,
+        # echoed on PASS so the CI log carries the walk gate's landing poll (waited=)
+        echo=["walk:"],
     ),
     # tier A proven headless (lead, 8.4s, bench landing PASS). CI asserts only
     # completion + landing; headless render columns are dead (adapter empty,
@@ -329,6 +331,10 @@ def main(argv=None):
         code, output, timed_out, elapsed, sizes = run_scenario(
             s, godot, out_dir, args.timeout, args.verbose)
         ok, detail = evaluate(s, output, code, timed_out, sizes, timeout=args.timeout)
+        if ok:
+            for line in output.splitlines():
+                if any(p in line for p in s.get("echo", ())):
+                    print(f"[{s['name']}] {line.rstrip()}")
         rows.append([s["name"], s["tier"], "PASS" if ok else "FAIL", f"{elapsed:.1f}s", detail])
         if not ok:
             failed.append(s["name"])
