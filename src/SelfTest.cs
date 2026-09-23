@@ -3385,10 +3385,11 @@ public static class SelfTest
 		// H1: append-only ordinal and the type table.
 		Check((int)Block.Heartwood == (int)Block.Pumpkin + 1 && TexPack.Renderable[^1] == Block.Heartwood,
 			"H1 Heartwood appends after Pumpkin: ordinal +1 and last Renderable entry");
-		Check(Array.IndexOf(Blocks.Palette, Block.Heartwood) < 0 && Blocks.HardnessOf(Block.Heartwood) > 0f
+		Check(Array.IndexOf(Blocks.Palette, Block.Heartwood) < 0
+			&& Blocks.HardnessOf(Block.Heartwood) == Blocks.HardnessOf(Block.Wood)
 			&& Blocks.PlacementOf(Block.Heartwood) == Placement.None
 			&& Blocks.PolicyOf(Block.Heartwood) == OrientationPolicy.Any,
-			"H1 Heartwood is outside the Palette, breakable, Placement.None and OrientationPolicy.Any");
+			"H1 Heartwood is outside the Palette, wood-grade (HardnessOf == Wood), Placement.None and OrientationPolicy.Any");
 
 		// H2/H3: the default pack's declared overrides beat the frozen wood_top fallback.
 		var pack = TexPack.Load("res://texturepacks/default");
