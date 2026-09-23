@@ -44,6 +44,9 @@ validation, so the exact Android error will not repeat on iOS; if the iOS export
 net9.0 it is the same template/.NET-version expectation surfacing elsewhere, not a new root
 cause. CI is the evidence.
 
+No `dotnet workload install` step was needed: the Android and iOS .NET publishes completed in
+the green runs with no NETSDK1147.
+
 ## Android ETC2/ASTC import gate (measured in CI)
 
 The second CI run got past the TFM check and stopped at:
@@ -119,20 +122,38 @@ The mono template pack does contain the iOS template. The jobs still print the w
 directory and fail with `TEMPLATE GAP: ios.zip missing` if it ever disappears; this is
 reported, never skipped silently.
 
-## Measured green run (`desktop-android`, run 35837339941)
+## Measured runs
 
-Wall clock 08:28:48 → 08:31:01 (~2 min 13 s). The smoke test hit both expected lines:
-`SELFTEST PASS` and `texpack: using 'Default' (res://texturepacks/default) tile_size=16 tiles=12/12`.
+### Five-platform green run 35840648834 (`517b0a6`)
+
+All three jobs green. Wall clocks: `desktop-android` 09:03:16 → 09:05:04 (~1 min 48 s),
+`apple` 09:03:24 → 09:10:24 (~7 min 00 s), `publish` 09:10:27 → 09:10:37 (~10 s; the release
+step is skipped under `dry_run=true`).
+
+Artifacts measured from the publish job's `ls -l build`:
 
 ```
-Regress-linux-x86_64.zip      65,547,770 B
-Regress-windows-x86_64.zip    75,241,548 B
-Regress-android.apk          180,408,998 B
-Regress-desktop-android.zip  246,607,208 B   (uploaded bundle)
+Regress-linux-x86_64.zip       65,547,772 B
+Regress-windows-x86_64.zip     75,241,544 B
+Regress-android.apk           180,408,998 B
+Regress-macos-universal.zip   130,299,171 B
+Regress-ios-xcodeproj.zip     150,933,194 B
+Regress-desktop-android.zip   246,545,877 B   (uploaded bundle, run 35839335298; run 35840648834 same magnitude)
+Regress-apple.zip             278,355,278 B   (uploaded bundle)
 ```
 
-The macOS export in the same run succeeded (`[ DONE ] export`, `build/macos/Regress.zip`); the
-apple job ran 08:28:50 → 08:30:35 including the iOS step that failed on the missing Team ID.
+`MACOS_ARCHES=x86_64 arm64` (lipo on the packaged binary). The smoke test hit both expected
+lines: `SELFTEST PASS` and
+`texpack: using 'Default' (res://texturepacks/default) tile_size=16 tiles=12/12`. The iOS
+project-only tree (`build/ios`: `.xcodeproj` + `xcframework` + MoltenVK) is 608,976,896 B.
+
+### Desktop baseline, run 35837339941
+
+First `desktop-android`-only green run (the apple job still failed on the Team ID gate): wall
+clock 08:28:48 → 08:31:01 (~2 min 13 s); `Regress-linux-x86_64.zip` 65,547,770 B,
+`Regress-windows-x86_64.zip` 75,241,548 B, `Regress-android.apk` 180,408,998 B, uploaded bundle
+`Regress-desktop-android.zip` 246,607,208 B. The macOS export succeeded in the same run
+(`[ DONE ] export`, `build/macos/Regress.zip`).
 
 ETC2 change vs desktop artifact size: **not measured** — no earlier run reached packaging, so
 there is no baseline to compare against.
@@ -239,10 +260,11 @@ never fails the job.
 Run 35839335298 reported `IOS_XCODEBUILD_PROBE=FAIL`, but that was **our probe script's bug, not
 an iOS result**: the scheme name was extracted with its leading indentation (`        Regress`),
 so xcodebuild exited with `The project named "Regress" does not contain a scheme named ...` and
-the real build never ran. The probe now trims the scheme (`awk ... {print $1}`) and runs the
-build under a 1200-second watchdog that prints `ps -ef` and the build-log tail, reports
-`IOS_XCODEBUILD_PROBE=FAIL (timeout)` and stays non-fatal. Until a run completes the probe,
-**iOS buildability remains unverified**.
+the real build never ran. The probe was fixed in `517b0a6` (scheme trimmed with
+`awk ... {print $1}`, plus a 1200-second watchdog). Run 35840648834 then gave
+**`IOS_XCODEBUILD_PROBE=PASS`** (09:09:06 → 09:09:42, ~36 s): the generated project **builds but
+is unsigned** (`xcodebuild -sdk iphoneos -configuration Release CODE_SIGNING_ALLOWED=NO`
+succeeded).
 
 Artifacts (bundle `Regress-apple`): `Regress-macos-universal.zip`,
 `Regress-ios-xcodeproj.zip`.
@@ -263,33 +285,29 @@ release API).
   `androiddebugkey`, password `android`, DN `CN=Godot, OU=Godot Engine, O=Stichting Godot,
   C=NL`; random per run). It is **not** a production signing key and must not be used for a
   distributed build.
-- iOS is an **unsigned Xcode project** (`application/export_project_only=true`). The preset
-  carries the placeholder `application/app_store_team_id="XXXXXXXXXX"` because the export gate
-  requires a non-empty Team ID (`editor/export/editor_export_platform_apple_embedded.cpp`
-  @ `4.7.2-stable` lines 178-181 and 1674-1675) and we have no Apple credentials; a user must
-  replace it with their own team id to sign/build. Whether Xcode can build it is exactly what
-  `IOS_XCODEBUILD_PROBE` says: `PASS` = buildable but unsigned; `FAIL` or not run = buildability
-  not verified (**the one FAIL so far was a probe-script bug — the real build never ran — so
-  there is still no real result**). Never claim it "should build".
-- macOS/Windows/Linux artifacts are unsigned and not notarized.
-- macOS architecture: `MACOS_ARCHES=<lipo -archs>` is the evidence. The preset requests
-  `binary_format/architecture="universal"`, but only `lipo` shows what the template really
-  contains; if it reports only `x86_64`, Apple Silicon needs Rosetta 2.
+- iOS is an **unsigned Xcode project** (`application/export_project_only=true`), never an
+  `.ipa`: the preset carries the placeholder `application/app_store_team_id="XXXXXXXXXX"`
+  because the export gate requires a non-empty Team ID
+  (`editor/export/editor_export_platform_apple_embedded.cpp` @ `4.7.2-stable` lines 178-181 and
+  1674-1675) and we have no Apple credentials; a user must substitute their own team id to sign
+  and deploy to a device. `IOS_XCODEBUILD_PROBE=PASS` in run 35840648834 means it **builds but
+  stays unsigned** (`CODE_SIGNING_ALLOWED=NO`). CI must not claim it produces an installable
+  iOS build.
+- macOS/Windows/Linux artifacts are unsigned and not notarized; a downloaded macOS build is
+  Gatekeeper-quarantined and the user must allow it manually.
+- macOS architecture: `MACOS_ARCHES=x86_64 arm64` was measured by `lipo` in run 35840648834
+  (the preset requests `binary_format/architecture="universal"` and the template really is
+  universal; if a future template reports only `x86_64`, Apple Silicon needs Rosetta 2).
+- The `publish` step has never executed: every run so far used `dry_run=true`, so the
+  "tag → automatic GitHub release" path is **not end-to-end verified**; only its `if` guard has
+  been checked.
 
 ## Unverified until CI runs
 
 - Whether headless Godot loads the minimal `editor_settings-4.tres` (both `-4` and `-4.7`
   names are written; if neither is honored, the fallback is Godot's own default
   `export/android/debug_keystore` path, which is the same file).
-- The real shape of the iOS project-only export (`build/ios/...`); the workflow prints it and
-  packages whichever shape appears.
-- Whether the iOS export completes with the placeholder Team ID: run 35837339941 failed at the
-  `App Store Team ID not specified` gate (`editor_export_platform_apple_embedded.cpp` lines
-  178-181, 1674-1675), not on .NET; the next run decides.
-- Whether `dotnet publish -r ios-arm64` / `-r android-arm64` needs `dotnet workload install`
-  (NETSDK1147); Godot docs do not mention it, so the job only prints `dotnet --info` /
-  `dotnet workload list`.
-- `keytool -printcert -jarfile` / `apksigner verify --print-certs` were verified in run
-  35837339941 (signer DN and SHA-256 above); `apksigner` remains the loud failure if the APK is
-  unsigned.
-- `MACOS_ARCHES` and `IOS_XCODEBUILD_PROBE` results, and the first five-platform green run.
+- The `publish` step under a real tag has never executed (only its `if` guard is checked); see
+  the limits section above.
+- A local launch of the net9.0 build (see the .NET section) and any real-device iOS deployment
+  (the artifact is an unsigned project, never an installable build).
