@@ -209,6 +209,7 @@ public static class SelfTest
         CheckMesherTextureArrays(world);
         CheckMesherOrientation(world);
         CheckPlacementPreview(world);
+        CheckTextureVariants(world);
 
         return _failures;
     }
@@ -1469,6 +1470,179 @@ public static class SelfTest
             "grass top and side use different tile layers");
     }
 
+    // ---- texture variants ------------------------------------------------
+
+    /// <summary>Design §2 (slot allocation), §3 (position hash), §4 (failure matrix) and §6
+    /// (E1-E9). Every check can fail; the distribution histogram is printed raw.</summary>
+    private static void CheckTextureVariants(VoxelWorld world)
+    {
+        GD.Print("  ---- texture variants ----");
+        string baseDir = ProjectSettings.GlobalizePath("user://texpack_selftest");
+        if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
+
+        // E4: no-variant packs keep the pre-variants layout — layer numbers, not "it renders".
+        int[] frozen =
+        {
+            0, 0, 0, 0, 0, 0,        // Stone
+            1, 1, 1, 1, 1, 1,        // Dirt
+            3, 3, 2, 4, 3, 3,        // Grass: sides, top, bottom
+            5, 5, 5, 5, 5, 5,        // Sand
+            6, 6, 7, 7, 6, 6,        // Wood: top and bottom share the end grain
+            8, 8, 8, 8, 8, 8,        // Plank
+            9, 9, 9, 9, 9, 9,        // Leaves
+            10, 10, 10, 10, 10, 10,  // Bedrock
+        };
+        string baseOnly = baseDir + "/varbase";
+        WritePack(baseOnly, 1, AllTiles());
+        for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(baseOnly, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
+        var plain = TexPack.Load(baseOnly);
+        int wrong = 0;
+        for (int b = 0; b < TexPack.Renderable.Length; b++)
+            for (int f = 0; f < 6; f++)
+            {
+                var got = TexPack.LayersFor(TexPack.Renderable[b], f);
+                if (got.Length != 1 || got[0] != frozen[b * 6 + f]) wrong++;
+            }
+        int nonPng = 0;
+        foreach (var source in plain.Sources) if (source != TexPack.TileSource.Png) nonPng++;
+        Check(wrong == 0 && nonPng == 0 && plain.Array.GetLayers() == TexPack.KeyCount
+            && plain.Layers == TexPack.KeyCount,
+            $"E4 no-variant pack: frozen one-layer map in {plain.Layers} all-Png layers ({wrong} cells wrong, {nonPng} non-Png)");
+
+        string oneOverride = baseDir + "/varone";
+        WritePack(oneOverride, 1, AllTiles() + ", \"stone_top\": \"tiles/stone_top.png\"");
+        for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(oneOverride, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
+        WriteTile(oneOverride, "tiles/stone_top.png", 16, Colors.Red);
+        var over = TexPack.Load(oneOverride);
+        wrong = 0;
+        for (int b = 0; b < TexPack.Renderable.Length; b++)
+            for (int f = 0; f < 6; f++)
+            {
+                int want = b == 0 && f == Face.Top ? TexPack.KeyCount + 2 : frozen[b * 6 + f];
+                var got = TexPack.LayersFor(TexPack.Renderable[b], f);
+                if (got.Length != 1 || got[0] != want) wrong++;
+            }
+        Check(wrong == 0 && over.Array.GetLayers() == TexPack.LayerCount && over.Layers == TexPack.LayerCount,
+            $"E4 override pack: stone_top owns layer {TexPack.KeyCount + 2}, the other 47 cells stay frozen ({wrong} wrong)");
+
+        // A variant pack changes the array size: stone x4 + 11 singles = 15 layers.
+        string varied = baseDir + "/var4";
+        WriteVariantPack(varied, stoneCount: 4, dirtCount: 1);
+        var stone4 = TexPack.Load(varied);
+        var stoneLayers = TexPack.LayersFor(Block.Stone, Face.Top);
+        string stoneList = string.Join(", ", stoneLayers);
+        Check(stone4.Source == varied && stone4.Layers == 15 && stone4.VariantKeys == 1
+            && stone4.Array.GetLayers() == 15 && stoneLayers.Length == 4 && stoneLayers[0] == 0 && stoneLayers[3] == 3,
+            $"allocation: stone×4 pack is {stone4.Layers} layers, {stone4.VariantKeys} key with variants, stone owns [{stoneList}]");
+
+        // E1/E6: a real all-stone chunk is deterministic and stays inside LayersFor.
+        var chunk = world.CreateChunk(new Vector3I(120, 70, 120));
+        var blocks = chunk.GetComponent<ChunkBlocks>().Value;
+        Array.Fill(blocks, (byte)Block.Stone);
+        var coord = chunk.GetComponent<ChunkCoord>();
+        var first = ChunkMesher.Build(world, coord, blocks, out _).SurfaceGetArrays(0);
+        var second = ChunkMesher.Build(world, coord, blocks, out _).SurfaceGetArrays(0);
+        var norms = (Vector3[])first[(int)Mesh.ArrayType.Normal];
+        var uv2 = (Vector2[])first[(int)Mesh.ArrayType.TexUV2];
+        var uv2b = (Vector2[])second[(int)Mesh.ArrayType.TexUV2];
+        int outside = 0;
+        for (int i = 0; i < uv2.Length; i++)
+            if (uv2[i].Y != 0f
+                || Array.IndexOf(TexPack.LayersFor(Block.Stone, FaceOfNormal(norms[i])), (int)uv2[i].X) < 0) outside++;
+        Check(uv2.Length == 6144 && outside == 0 && SameValues(uv2, uv2b),
+            $"E1 16³ stone chunk: {uv2.Length} UV2 verts all inside LayersFor, rebuild byte-identical ({outside} outside)");
+
+        // E2: an edit outside the chunk forces the remesh path; the mesh must not move.
+        int bx = coord.X * 16, by = coord.Y * 16, bz = coord.Z * 16;
+        bool placed = world.SetBlock(bx + 18, by + 8, bz + 8, Block.Dirt);
+        var third = ChunkMesher.Build(world, coord, blocks, out _).SurfaceGetArrays(0);
+        Check(placed && SameValues(uv2, (Vector2[])third[(int)Mesh.ArrayType.TexUV2]),
+            "E2 remesh after an edit two cells outside the chunk keeps UV2 identical");
+        world.SetBlock(bx + 18, by + 8, bz + 8, Block.Air);
+
+        // E3: same local cell, different chunks — a chunk-local hash fails all six faces.
+        Check(CrossContextFaces(world, new Vector3I(130, 70, 130)) == 0
+            && CrossContextFaces(world, new Vector3I(150, 70, 130)) == 0,
+            "E3 two chunks, same local cell: UV2 == absolute-coordinate TileIndex on all six faces");
+
+        // E5/E6: hash spread + bounds over 256 samples, histogram printed raw.
+        int[] hist = new int[stoneLayers.Length];
+        int outsideSample = 0;
+        for (int z = 0; z < 16; z++)
+            for (int x = 0; x < 16; x++)
+            {
+                int layer = TexPack.TileIndex(Block.Stone, Face.Top, x, 7, z);
+                int slot = Array.IndexOf(stoneLayers, layer);
+                if (slot < 0) outsideSample++; else hist[slot]++;
+            }
+        int used = 0, low = int.MaxValue, high = 0;
+        foreach (int count in hist)
+        {
+            if (count > 0) used++;
+            low = Math.Min(low, count);
+            high = Math.Max(high, count);
+        }
+        string histLine = string.Join(" ", hist);
+        GD.Print($"  hist  stone×4: {histLine}");
+        Check(used == 4 && low >= 32 && high <= 128 && outsideSample == 0,
+            $"E5/E6 FNV-1a spreads stone×4 over 256 samples ({used}/4 used, {low}..{high} per variant, {outsideSample} outside LayersFor)");
+
+        // E7: [ok, corrupt, ok] keeps three slots, the corrupt one is `missing`, never picked.
+        string badVariant = baseDir + "/varbad";
+        WriteVariantPack(badVariant, stoneCount: 3, dirtCount: 1, corruptAt: 2);
+        var mixed = TexPack.Load(badVariant);
+        var mixedLayers = TexPack.LayersFor(Block.Stone, Face.Top);
+        int picks = 0;
+        if (mixedLayers.Length == 3)
+            for (int z = 0; z < 16; z++)
+                for (int x = 0; x < 16; x++)
+                    if (TexPack.TileIndex(Block.Stone, Face.Top, x, 7, z) == mixedLayers[1]) picks++;
+        Check(mixedLayers.Length == 3 && mixed.Layers == 14
+            && mixed.Sources[mixedLayers[0]] == TexPack.TileSource.Png
+            && mixed.Sources[mixedLayers[1]] == TexPack.TileSource.Missing
+            && mixed.Sources[mixedLayers[2]] == TexPack.TileSource.Png && picks == 0,
+            $"E7 [ok, corrupt, ok]: 3 slots, middle is `missing`, never selected ({picks} picks, {mixed.Layers} layers)");
+
+        // E8: the cap keeps the first 16 entries (the warning text goes to stderr).
+        string capped = baseDir + "/varcap";
+        WriteVariantPack(capped, stoneCount: 20, dirtCount: 1);
+        var huge = TexPack.Load(capped);
+        var hugeLayers = TexPack.LayersFor(Block.Stone, Face.Top);
+        Check(hugeLayers.Length == TexPack.MaxVariants && huge.Layers == TexPack.MaxVariants + 11
+            && hugeLayers[TexPack.MaxVariants - 1] - hugeLayers[0] == TexPack.MaxVariants - 1,
+            $"E8 20-entry array allocates {hugeLayers.Length} slots ({huge.Layers} layers; cap warning on stderr)");
+
+        // E9: the demo pack worker B ships; an equivalent inline pack when it is absent.
+        const string demo = "res://texturepacks/variants-demo";
+        bool haveDemo = DirAccess.DirExistsAbsolute(demo);
+        string which = haveDemo ? demo : baseDir + "/vareq";
+        if (!haveDemo) WriteVariantPack(which, stoneCount: 4, dirtCount: 3);
+        var demoPack = TexPack.Load(which);
+        Check(demoPack.Layers == 17 && demoPack.VariantKeys == 2 && demoPack.Array.GetLayers() == 17,
+            $"E9 variants-demo{(haveDemo ? "" : " (equivalent, res:// pack absent)")}: {demoPack.Layers} layers, {demoPack.VariantKeys} keys with variants");
+
+        if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
+    }
+
+    /// <summary>Builds a chunk whose only solid block sits at local (3, 4, 5) and counts the
+    /// vertices whose UV2.x disagrees with the absolute-coordinate tile index (0 = every one
+    /// of the six faces agrees).</summary>
+    private static int CrossContextFaces(VoxelWorld world, Vector3I chunkKey)
+    {
+        var entity = world.CreateChunk(chunkKey);
+        var blocks = entity.GetComponent<ChunkBlocks>().Value;
+        Array.Clear(blocks);
+        blocks[ChunkBlocks.Index(3, 4, 5)] = (byte)Block.Stone;
+        var arrays = ChunkMesher.Build(world, entity.GetComponent<ChunkCoord>(), blocks, out _).SurfaceGetArrays(0);
+        var norms = (Vector3[])arrays[(int)Mesh.ArrayType.Normal];
+        var uv2 = (Vector2[])arrays[(int)Mesh.ArrayType.TexUV2];
+        int wx = chunkKey.X * 16 + 3, wy = chunkKey.Y * 16 + 4, wz = chunkKey.Z * 16 + 5;
+        int wrong = 0;
+        for (int i = 0; i < norms.Length; i++)
+            if (uv2[i].X != TexPack.TileIndex(Block.Stone, FaceOfNormal(norms[i]), wx, wy, wz)) wrong++;
+        return wrong;
+    }
+
     private static void WritePack(string dir, int version, string tilesJson, string extra = "")    {
         Directory.CreateDirectory(dir);
         File.WriteAllText(dir + "/pack.json",
@@ -1481,6 +1655,41 @@ public static class SelfTest
         var image = Image.CreateEmpty(size, size, false, Image.Format.Rgba8);
         image.Fill(color);
         image.SavePng(packDir + "/" + rel);
+    }
+
+    /// <summary>Writes a 12-key pack whose `stone` (and optionally `dirt`) declare several
+    /// variants; every other key is one string. `corruptAt` (1-based) writes engineered-invalid
+    /// bytes instead of stone's PNG at that variant slot.</summary>
+    private static void WriteVariantPack(string dir, int stoneCount, int dirtCount, int corruptAt = 0)
+    {
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < TexPack.KeyCount; i++)
+        {
+            string key = TexPack.Keys[i];
+            int count = key == "stone" ? stoneCount : key == "dirt" ? dirtCount : 1;
+            if (sb.Length > 0) sb.Append(", ");
+            if (count == 1) { sb.Append($"\"{key}\": \"tiles/{key}.png\""); continue; }
+            sb.Append($"\"{key}\": [");
+            for (int v = 1; v <= count; v++) sb.Append(v > 1 ? ", " : "").Append($"\"tiles/{key}_{v}.png\"");
+            sb.Append(']');
+        }
+        WritePack(dir, 1, sb.ToString());
+
+        for (int i = 0; i < TexPack.KeyCount; i++)
+        {
+            string key = TexPack.Keys[i];
+            int count = key == "stone" ? stoneCount : key == "dirt" ? dirtCount : 1;
+            for (int v = 1; v <= count; v++)
+            {
+                string rel = count == 1 ? $"tiles/{key}.png" : $"tiles/{key}_{v}.png";
+                if (key == "stone" && v == corruptAt)
+                {
+                    Directory.CreateDirectory(dir + "/tiles");
+                    File.WriteAllBytes(dir + "/" + rel, new byte[] { 0x6e, 0x6f, 0x74, 0x70, 0x6e, 0x67 });
+                }
+                else WriteTile(dir, rel, 16, new Color(v / (float)(count + 1), key == "stone" ? 0.35f : 0.65f, 0.55f));
+            }
+        }
     }
 
     private static string AllTiles(bool includeMissing = true)

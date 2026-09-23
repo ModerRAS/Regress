@@ -20,7 +20,7 @@ Terrain spans negative Y, with a bedrock floor and a heightmap surface.
 ```bash
 dotnet build                                   # build the C# assembly
 godot-mono --path .                            # play
-godot-mono --headless --path . -- --selftest   # 172 headless assertions
+godot-mono --headless --path . -- --selftest   # 182 headless assertions
 godot-mono --path . -- --demo                  # scripted walk + build + mine-down test
 godot-mono --path . -- --bench                 # performance run with per-system breakdown
 godot-mono --path . -- --shot=out.png          # render one frame to a PNG and quit
@@ -128,7 +128,7 @@ per chunk), bounded by time budgets rather than chunk counts. Details and number
 
 | flag | what it does |
 | --- | --- |
-| `--selftest` | 172 headless assertions: terrain, mesher cross-checked against brute force, triangle winding, vertical-world invariants, break/place request pipeline, tree felling, per-world terrain, placement preview (ghost, rotate keys, sticky memory) |
+| `--selftest` | 182 headless assertions: terrain, mesher cross-checked against brute force, triangle winding, vertical-world invariants, break/place request pipeline, tree felling, per-world terrain, placement preview (ghost, rotate keys, sticky memory), texture variants (frozen layout, FNV-1a selection, cap, degradation) |
 | `--demo` | drives the player without a keyboard: walk, place, then mine straight down 63 blocks to bedrock, asserting they stay on solid ground |
 | `--bench` | five-phase performance run; `--frozen` measures the engine floor, `--view=` / `--collision=` / `--budget=` sweep |
 | `--shot=path.png` | render N frames, save a PNG, quit |

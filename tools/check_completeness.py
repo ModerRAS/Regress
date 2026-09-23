@@ -11,10 +11,17 @@ out of src/TexPack.cs, and the mapping table out of docs/texture-packs.md, and a
   (e) the key matches the frozen per-block mapping rule
   (f) ChunkMesher.Dirs order matches the Face constants (see EXPECTED_DIRS)
   (g) every row's FaceKey column is that cell's optional override: `<block>_<suffix>` for the
-      row's Block and Face, at layer 12 + blockOrdinal*6 + faceIndex
+      row's Block and Face, at the no-variant baseline layer 12 + blockOrdinal*6 + faceIndex
   (h) src/TexPack.cs still declares the frozen vocabulary: KeyCount 12, the same 12 Keys in
       order, the same Renderable and FaceSuffix order, LayerCount as KeyCount +
       FaceKeys.Length, and the same 48 ints in its Frozen fallback table
+
+(g)/(h) together pin the **no-variant baseline layout and the frozen key order**: base key k ->
+layer k, override cell c -> layer 12 + c, and LayerCount = KeyCount + FaceKeys.Length as the
+baseline slot space. They do NOT constrain the absolute layer numbers of a variant pack: a key
+that declares variants occupies max(1, valid variants) consecutive layers, so every later key
+shifts and `12 + cell` is the baseline only. Nothing here may assume a fixed layer number for a
+manifest that declares variants.
 
 Python 3 stdlib only.  Exit 0 = exhaustive; non-zero + message on stderr otherwise.
 
@@ -34,7 +41,8 @@ TILE_KEYS = {
     "wood_side": 6, "wood_top": 7, "plank": 8, "leaves": 9, "bedrock": 10, "missing": 11,
 }
 # Frozen per-face override layout: suffixes in Face order (PosX=0 … NegZ=5), cells in
-# Renderable order, layer = 12 + blockOrdinal*6 + faceIndex (12..59).
+# Renderable order, layer = 12 + blockOrdinal*6 + faceIndex (12..59) — the no-variant
+# baseline; a key with variants shifts every later key's layers.
 FACE_SUFFIXES = ["posx", "negx", "top", "bottom", "posz", "negz"]
 RENDERABLE_BLOCKS = ["Stone", "Dirt", "Grass", "Sand", "Wood", "Plank", "Leaves", "Bedrock"]
 OVERRIDE_LAYER_BASE = len(TILE_KEYS)
@@ -43,6 +51,7 @@ FACE_KEYS = {
     for block_ord, block in enumerate(RENDERABLE_BLOCKS)
     for face in range(len(FACE_SUFFIXES))
 }
+# No-variant baseline slot space; a real pack's Texture2DArray layer count is this or more.
 LAYER_COUNT = OVERRIDE_LAYER_BASE + len(FACE_KEYS)
 # A face name means a cube side, so it pins the direction vector the mesher must iterate.
 EXPECTED_DIRS = {
@@ -200,7 +209,8 @@ def main():
 
     renderable = [b for b in blocks if b != "Air"]
 
-    # (h) src/TexPack.cs is the append-only proof: base keys 0..11, overrides 12+cell.
+    # (h) src/TexPack.cs is the append-only proof: base keys 0..11, overrides 12+cell —
+    # the no-variant baseline + frozen key order, not variant-pack absolute layers.
     check(tex["key_count"] == OVERRIDE_LAYER_BASE,
           f"TEXPACK KeyCount: TexPack.cs says {tex['key_count']}, frozen base count is "
           f"{OVERRIDE_LAYER_BASE}")
@@ -238,7 +248,7 @@ def main():
         # (a) uniqueness on the *source* face index, not the printed name.
         cell = (block, faces[face_name])
         seen[cell] = seen.get(cell, 0) + 1
-        # (g) the FaceKey column is this cell's optional override, at layer 12 + cell.
+        # (g) the FaceKey column is this cell's optional override, at baseline layer 12 + cell.
         if block in RENDERABLE_BLOCKS:
             block_ord = RENDERABLE_BLOCKS.index(block)
             row_cell = block_ord * 6 + faces[face_name]

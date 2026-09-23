@@ -117,7 +117,7 @@ public static class ChunkMesher
 					{
 						var d = Dirs[f];
 						if (Blocks.IsSolid((Block)cells[PadIndex(x + d.X, y + d.Y, z + d.Z)])) continue;
-						EmitFace(verts, norms, cols, uvs, uv2s, idx, b, o, f, x, y, z);
+						EmitFace(verts, norms, cols, uvs, uv2s, idx, b, o, f, x, y, z, bx, by, bz);
 					}
 				}
 			}
@@ -142,15 +142,17 @@ public static class ChunkMesher
 		var uv2s = new List<Vector2>(24);
 		var idx = new List<int>(36);
 		for (int f = 0; f < 6; f++)
-			EmitFace(verts, norms, cols, uvs, uv2s, idx, block, orientation, f, 0, 0, 0);
+			EmitFace(verts, norms, cols, uvs, uv2s, idx, block, orientation, f, 0, 0, 0, 0, 0, 0);
 		return Emit(verts, norms, cols, uvs, uv2s, idx);
 	}
 
-	/// <summary>One face quad of one block at cell (x, y, z), rotation applied. Both the chunk
-	/// path and <see cref="BuildBlock"/> go through here, so a preview cannot drift from the world.</summary>
+	/// <summary>One face quad of one block at cell (x, y, z) plus the chunk's world origin
+	/// (bx, by, bz), rotation applied. Both the chunk path and <see cref="BuildBlock"/> go through
+	/// here, so a preview cannot drift from the world. The variant hash uses the block's absolute
+	/// world position and the LOCAL face (design §3).</summary>
 	private static void EmitFace(List<Vector3> verts, List<Vector3> norms, List<Color> cols,
 		List<Vector2> uvs, List<Vector2> uv2s, List<int> idx, Block block, byte orientation, int face,
-		int x, int y, int z)
+		int x, int y, int z, int bx, int by, int bz)
 	{
 		int start = verts.Count;
 		var corner = FaceCorners[face];
@@ -160,8 +162,9 @@ public static class ChunkMesher
 		float tint = FaceTint[face];
 		var color = new Color(tint, tint, tint);
 		var normal = new Vector3(d.X, d.Y, d.Z);
-		// The tile is the one for the face the rotation puts here, not the world face.
-		int tile = TexPack.TileIndex(block, Orientation.LocalFace(orientation, face));
+		// The tile is the one for the LOCAL face the rotation puts here, not the world face, and
+		// the variant is chosen from the block's absolute world position (design §3).
+		int tile = TexPack.TileIndex(block, Orientation.LocalFace(orientation, face), bx + x, by + y, bz + z);
 		for (int i = 0; i < 4; i++)
 		{
 			int cx = corner[i * 3], cy = corner[i * 3 + 1], cz = corner[i * 3 + 2];

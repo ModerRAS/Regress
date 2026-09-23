@@ -2,8 +2,9 @@
 
 A texture pack is a **directory** containing a `pack.json` manifest and the PNGs it names — no
 archive, no second manifest name, no in-engine download. Twelve base tile keys and 48 optional
-per-face override keys are the entire vocabulary, and their indices are frozen because they are
-the layer order the renderer receives.
+per-face override keys are the entire vocabulary, and their order is frozen because it fixes the
+baseline layer layout the renderer receives (variants shift layers, never key order — see
+"Texture variants").
 The pack supplies art; the game supplies the mapping from `Block` + `Face` to a key, and nothing
 else.
 
@@ -16,10 +17,12 @@ reads a file.
 
 - A pack is a directory: `pack.json` plus PNGs under it. Twelve base keys, fixed indices `0..11`.
 - Optional **per-face overrides**: `<block>_<suffix>` keys (`stone_posx`, `leaves_negz`, …), suffix
-  order `posx, negx, top, bottom, posz, negz`, layer `12 + block*6 + face`. A provided override
+  order `posx, negx, top, bottom, posz, negz`, baseline layer `12 + block*6 + face` (the layout
+  when no key declares variants). A provided override
   wins for exactly that cell; every other cell keeps the frozen base map. A pack with only the
   twelve base keys needs no changes; an override whose PNG is missing or bad falls back to `missing`
-  like any other tile. One override allocates all 60 layers.
+  like any other tile. One override enumerates all 60 keys — 60 layers in the no-variant baseline,
+  more when a key declares variants (see "Texture variants").
 - Discovery: `--pack=<dir>` → `user://texturepacks/<selected.txt>` → `res://texturepacks/default`
   → procedural tiles. The first loadable pack wins; the last rung reads no files. Every run
   prints one `texpack: using …` success line, including rung 4.
@@ -54,9 +57,10 @@ arrays[(int)Mesh.ArrayType.TexUV2] = uv2s.ToArray();  // (tileIndex, 0), the fro
   coordinate of exactly `0.0` or `1.0` samples the edge texel, with no wrap and no atlas bleed
   (verified on this build: `u == 1.0` clamps to the last texel under `repeat_disable`, and wraps
   to the first under `repeat_enable` — the hint is load-bearing).
-- `UV2.x` carries the canonical tile index as a float. It is the only channel that selects a
-  tile, which is what makes the atlas fallback (below) a loader-side change with no mesher
-  change.
+- `UV2.x` carries the tile's layer index as a float: the canonical key index in the no-variant
+  baseline, and the position-selected variant's layer once variants exist. It is the only channel
+  that selects a tile, which is what makes the atlas fallback (below) a loader-side change with no
+  mesher change.
 - Art is authored **along the block's own up direction**. All six face bases are right-handed as
   seen from outside (`u × v = -n`), so a directional glyph reads upright and un-mirrored on every
   face. A block's stored rotation rotates both the tile choice (its local face) and the in-face
@@ -71,14 +75,15 @@ Forty-eight optional keys extend the base vocabulary without touching it. A key 
 | --- | --- | --- | --- | --- | --- | --- |
 | `Face` | 0 | 1 | 2 | 3 | 4 | 5 |
 
-`cell = blockOrdinal * 6 + faceIndex`, and the override's layer is **`12 + cell`** (12..59).
-`TexPack.LayerCount` is 60: the twelve base keys then the 48 override slots, appended and never
-renumbered.
+`cell = blockOrdinal * 6 + faceIndex`, and in the **no-variant baseline** the override's layer is
+**`12 + cell`** (12..59). `TexPack.LayerCount` is 60: the twelve base keys then the 48 override
+slots, appended and never renumbered — the baseline slot space, not necessarily the array size
+once variants exist (see "Texture variants").
 
 Resolution per `(Block, Face)`: if the manifest provides that cell's exact override key, the cell
-samples layer `12 + cell`; otherwise it keeps the frozen base mapping in the completeness table
-below. A pack that ships only the twelve base keys resolves every cell through the base map —
-overrides are additive.
+samples that key's primary layer — the **no-variant baseline** layer `12 + cell`; otherwise it
+keeps the frozen base mapping in the completeness table below. A pack that ships only the twelve
+base keys resolves every cell through the base map — overrides are additive.
 
 Three override spellings are also base keys, and a manifest key is read as a **base** key when the
 name exists in both vocabularies: `grass_top` (Grass.Top), `grass_bottom` (Grass.Bottom) and
@@ -95,7 +100,8 @@ tile. The pack is never rejected for it, and an unknown key still warns once and
 
 Array allocation is all-or-nothing: with no override the array has today's exactly 12 layers; as
 soon as one override key is provided the array has all 60, unused slots holding the `missing`
-tile and referenced by no cell. `tiles=12/12` in the success line still counts base keys only;
+tile and referenced by no cell. (Variants change the layer count, never the enumerated or
+frozen key order — see "Texture variants".) `tiles=12/12` in the success line still counts base keys only;
 the override count travels on its own line, printed once when at least one override is provided:
 
 ```
@@ -214,7 +220,7 @@ Numbers arrive as `double`, so numeric rules are comparisons, not type identity.
 | `version` | number, integer | **yes** | — | must equal `1`; anything else **rejects the pack** |
 | `name` | string | no | directory name | cosmetic; wrong type warns and takes the directory name |
 | `tile_size` | number, integer | **yes** | — | `>= 1`; the width **and** height of every tile; missing or invalid **rejects the pack** |
-| `tiles` | object, key → string | no | `{}` | keys from the twelve base keys or the 48 override keys; values are pack-relative paths (below) |
+| `tiles` | object, key → string or array of strings | no | `{}` | keys from the twelve base keys or the 48 override keys; a value is one pack-relative path or a list of them (up to 16 variants, first = primary) |
 
 `tile_size` is required because guessing it silently misaligns every tile. `name` is optional
 because nothing renders it. Unknown top-level fields and unknown tile keys warn once and are
@@ -370,8 +376,10 @@ success line through `GD.Print`. Noise is bounded: at most one tile line per pro
 one per provided override key + 1 per unknown field + 1 per discovery source.
 
 Every tile row below applies to a base key and to an override key alike; for an override the
-`<key>` in the message is the `<block>_<face>` name. The failure matrix itself is unchanged: an
-override claims its slot, and a failed read makes that slot's pixels the pack's `missing` tile.
+`<key>` in the message is the `<block>_<face>` name. For single-string values nothing below
+changes: an override claims its slot, and a failed read makes that slot's pixels the pack's
+`missing` tile — `missing`'s first valid variant, one fixed image for every degraded slot, never
+position-selected. Variant values add the list rows below.
 
 | failure | warn | fallback |
 | --- | --- | --- |
@@ -387,6 +395,11 @@ override claims its slot, and a failed read makes that slot's pixels the pack's 
 | tile file missing | `tile '<key>': file not found: <rel> — using 'missing'` | that tile → `missing` |
 | tile not a decodable PNG | `tile '<key>': not a decodable PNG: <rel> — using 'missing'` | that tile → `missing` |
 | tile size ≠ `tile_size` | `tile '<key>': <w>x<h> does not match tile_size <n> — using 'missing'` | that tile → `missing` |
+| tile value is an object / number / bool (neither string nor array) | `tile '<key>' is not a path or a list of paths — using 'missing'` | key → 1 slot, `missing` |
+| empty variants array `[]` | `tile '<key>': empty variant list — using 'missing'` | key → 1 slot, `missing` |
+| more than 16 variants | `tile '<key>': <n> variants, cap is 16 — only the first 16 are used` | first 16 kept, the rest dropped |
+| one entry of a variants array is invalid (not a string / empty / escapes root / file missing / undecodable / wrong size) | the matching row above with the variant index `[i/n]` | that variant's slot → `missing` image; the key keeps its other variants |
+| every variant of a key invalid | the per-variant lines, one per bad variant | key → 1 slot, `missing` |
 | `Texture2DArray` build returns non-`OK` | `texture array build failed — using procedural tiles` | procedural tiles for the whole pack |
 | `missing` itself unavailable | same lines, tail `— using procedural colour` | procedural tile |
 | unknown tile key / manifest field | `unknown … — ignored` | ignored |
@@ -463,8 +476,9 @@ zero-diff regression baseline; a 1/255 shift will read as a regression.
 ### Chosen path and the one fallback
 
 **Chosen: `Texture2DArray`.** Twelve images for a base-only pack, 60 once any override is used
-(the unused slots hold the `missing` tile), one sampler, per-vertex layer index, no UV rects, no
-atlas packing, no bleeding — a tile is a file.
+and no variants are declared (the unused slots hold the `missing` tile; variants add layers — see
+"Texture variants"), one sampler, per-vertex layer index, no UV rects, no atlas packing, no
+bleeding — a tile is a file.
 
 **Fallback: a single atlas image.** If array sampling ever fails on a target, the loader builds a
 4×4 atlas of the same twelve images — 8×8 when the 60 slots are in use — and the fragment shader
@@ -558,8 +572,8 @@ the bundled pack, `--pack=texturepacks/default`. Restart to change packs — v1 
 6. **The procedural fallback is quantized** (±1/255), so it is not a zero-diff baseline.
 7. **No hot reload.** A pack change requires a restart.
 8. **Per-face overrides are all-or-nothing in VRAM.** A pack that provides even one override
-   carries the full 60-layer array — 5× the base art — because the fixed override indices leave
-   no room for a partial array.
+   carries at least the full 60-slot array — 5× the base art, more with variants — because the
+   fixed override indices leave no room for a partial array.
 9. **The per-face UV basis was normalised in this build.** The v1 bases mirrored `posx` and
    `negz` in `u` and `bottom` in `v`; all six faces now satisfy `u × v = -n`, so those three
    faces render mirrored against any earlier build. The bundled art is direction-agnostic
@@ -568,3 +582,96 @@ the bundled pack, `--pack=texturepacks/default`. Restart to change packs — v1 
    normalisation moved 1.09% of the pixels of a sky-like frame (27.88% of the frame) and 69.58%
    of a vegetation-like frame (59.97% of the frame), mean per-pixel |Δ| ≈ 19/255. Any
    render/pixel-level baseline captured before this change is void (this weakness).
+
+## Texture variants (string or array)
+
+A `tiles` value is **either a string** — one pack-relative path, the v1 form — **or an array of
+strings**: that key's **variants**, in manifest order. The first entry is the key's **primary**
+layer, the one the two-argument `TileIndex(Block, Face)` returns. The cap is **16 variants per
+key**; a longer array keeps only the first 16 (warning below). The rule applies uniformly to the
+twelve base keys and the 48 `<block>_<suffix>` override keys, and `version` stays `1`: a manifest
+with no arrays is unchanged.
+
+Schema row for `tiles` (see "pack.json"): a value is one pack-relative path or a list of them,
+up to 16 variants, first = primary.
+
+```json
+{
+  "version": 1,
+  "name": "Varied",
+  "tile_size": 16,
+  "tiles": {
+    "stone": ["tiles/stone_0.png", "tiles/stone_1.png", "tiles/stone_2.png", "tiles/stone_3.png"],
+    "dirt": ["tiles/dirt_0.png", "tiles/dirt_1.png", "tiles/dirt_2.png"]
+  }
+}
+```
+
+### The corrected layer invariant
+
+- **Key order is frozen** — the twelve base keys, then the 48 face cells, never reordered. Each
+  key contributes one **consecutive** layer per **declared** variant (capped at 16), in manifest
+  order: a declared variant whose PNG is missing, undecodable or the wrong size keeps its slot and
+  degrades to the `missing` image, so `stone = [ok, corrupt, ok]` allocates 3 layers with the
+  middle one `missing`. Only a key with **zero decodable variants** — an empty list, a non-list
+  value, or every variant bad — contributes exactly one slot, today's degradation.
+- **A no-variant pack is byte-identical to the pre-variants build**: base key `k → layer k`,
+  override cell `c → layer 12 + c`, same `Sources`, same table. `12 + cell` is the **no-variant
+  baseline only**.
+- **`TexPack.LayerCount = 60` is the no-variant baseline slot space, not an array size.** The
+  real array count grows with variants: each key before a variant key shifts every later key by
+  its extra slots. Once any key declares variants, "an override is always at layer `12 + cell`"
+  is false — pack authors must not hard-code absolute layer numbers.
+- Hostile-pack ceiling: all 60 keys × 16 variants = **960 layers**; at 16×16 RGBA8 (1 KiB per
+  layer) that is **≈ 960 KiB** of texture memory, plus decode time.
+
+Worked layer counts:
+
+| pack | keys | slots | layers |
+| --- | --- | --- | --- |
+| default (twelve single strings, no overrides) | 12 | 12 × 1 | **12** |
+| any pack with one override, no variants | 60 | 60 × 1 | **60** (today) |
+| `variants-demo` (stone 4, dirt 3, ten singles, no overrides) | 12 | 4 + 3 + 10 × 1 | **17** |
+| hostile pack: all 60 keys × 16 variants | 60 | 60 × 16 | **960** ceiling |
+
+### Selection rule
+
+```
+variant = FNV-1a(worldX, worldY, worldZ, localFace) % validCount
+```
+
+`validCount` is that key's **decodable** variant count, so selection only ever lands on a slot
+whose variant decoded — a degraded slot is never position-selected.
+
+- **Absolute world coordinates** — `coord * 16 + local` in the mesher, never chunk-local, so the
+  same world position gets the same variant whichever chunk meshes it.
+- **Local face** — the `0..5` face index that names the key, after the block's rotation is mapped;
+  a rotated block keeps each local face's variant.
+- Deterministic: no RNG, no time, no state. Rebuilding after any edit yields the same `UV2.x`.
+
+Failure handling for variant values — wrong value type, empty list, over-cap list, one bad
+variant, all-bad key — is specified by the list rows in "What happens on bad data".
+
+The `missing` key's **first valid variant** is the single global fallback image copied into every
+degraded slot; it is **never position-selected**, so a debug run shows one fixed tile, not a
+random one. Extra variants declared on `missing` still occupy their layers per the uniform rule
+but are referenced by no Block+Face cell (Air is never meshed).
+
+### Reporting
+
+The success line is untouched, byte for byte — release smoke-test greps and this quote stay
+valid:
+
+```
+texpack: using 'Default' (res://texturepacks/default) tile_size=16 tiles=12/12
+```
+
+The overrides line is untouched too. One new line is printed after the success line, and only
+when at least one key has ≥ 2 valid variants:
+
+```
+texpack: <source>: <Layers> layers, <K> keys with variants (cap 16)
+```
+
+`<Layers>` is the actual `Texture2DArray` layer count and `<K>` the number of keys with two or
+more valid variants.

@@ -15,6 +15,9 @@ public static class TexPack
     public const int KeyCount = 12;
     public const int DefaultTileSize = 16;
 
+    /// <summary>Most variants one key may declare (design §5). 60 keys x 16 = 960 layers ceiling.</summary>
+    public const int MaxVariants = 16;
+
     /// <summary>Frozen layer order. Never renumbered.</summary>
     public static readonly string[] Keys =
     {
@@ -34,7 +37,9 @@ public static class TexPack
     /// <summary>Optional per-face override keys; layer = KeyCount + cell.</summary>
     public static readonly string[] FaceKeys = BuildFaceKeys();
 
-    /// <summary>Array layers the loader may need: 12 base + 48 optional per-face slots.</summary>
+    /// <summary>Array layers the loader may need: 12 base + 48 optional per-face slots.
+    /// This stays the frozen no-variant baseline slot space; a variant pack's array is
+    /// <see cref="Pack.Layers"/> layers, computed by the uniform slot rule (design §2).</summary>
     public static readonly int LayerCount = KeyCount + FaceKeys.Length;
 
     /// <summary>Rung-4 art, authored in sRGB — the sampler's source_color conversion yields linear.</summary>
@@ -59,6 +64,15 @@ public static class TexPack
         public bool Procedural;
         public int FaceOverrides;
         public TileSource[] Sources;
+
+        /// <summary>Actual Texture2DArray layer count: the sum of every enumerated key's slots.</summary>
+        public int Layers;
+
+        /// <summary>Keys with at least two decodable variants (the new report line's K).</summary>
+        public int VariantKeys;
+
+        /// <summary>Slot layers per key, primary first; null = the pack does not enumerate that key.</summary>
+        public int[][] KeyLayers;
     }
 
     /// <summary>
@@ -80,6 +94,46 @@ public static class TexPack
     /// <summary>The last accepted pack's resolution; the frozen fallback until one loads.</summary>
     private static int[] _resolved = Frozen;
 
+    /// <summary>Slot layers per key, frozen order; null = the last pack does not enumerate it.</summary>
+    private static int[][] _keyLayers = FrozenSlots();
+
+    /// <summary>The selectable layers per key — decodable variants only, primary-first order.</summary>
+    private static int[][] _validLayers = _keyLayers;
+
+    /// <summary>The `missing` key's primary slot; what Air and shape misses resolve to.</summary>
+    private static int _missingLayer = Missing;
+
+    /// <summary>Override keys the last pack declared. A provided-but-bad override still counts:
+    /// only these claim their (Block,Face) cell, while the other override cells keep owning
+    /// their slots (fixed 60-layer space) but show the frozen base mapping. All false for the
+    /// frozen/procedural layout.</summary>
+    private static bool[] _provided = new bool[LayerCount];
+
+    /// <summary>The pre-variants single-slot layout: base key k owns layer k, override cells absent.</summary>
+    private static int[][] FrozenSlots()
+    {
+        var slots = new int[LayerCount][];
+        for (int k = 0; k < KeyCount; k++) slots[k] = new[] { k };
+        return slots;
+    }
+
+    /// <summary>
+    /// FNV-1a over the four ints: the variant choice is a pure function of absolute world
+    /// position and the LOCAL face (design §3). Deterministic, no RNG, no time, no state.
+    /// </summary>
+    public static uint Mix(int x, int y, int z, int face)
+    {
+        unchecked
+        {
+            uint h = 2166136261u;
+            h = (h ^ (uint)x) * 16777619u;
+            h = (h ^ (uint)y) * 16777619u;
+            h = (h ^ (uint)z) * 16777619u;
+            h = (h ^ (uint)face) * 16777619u;
+            return h;
+        }
+    }
+
     /// <summary>Cell for a renderable Block+Face, or -1 for Air / an out-of-range face.</summary>
     private static int Cell(Block b, int face)
     {
@@ -89,11 +143,40 @@ public static class TexPack
         return -1;
     }
 
-    /// <summary>Frozen Block+Face -> tile layer. Per face: exact override, else the base fallback.</summary>
+    /// <summary>Key index for a 48-cell cell: the override cell when the pack declares it,
+    /// else the frozen base key.</summary>
+    private static int LayerKey(int cell) =>
+        _provided[KeyCount + cell] ? KeyCount + cell : Frozen[cell];
+
+    /// <summary>Key name for warnings — base keys first, then the 48 override keys.</summary>
+    private static string KeyName(int key) => key < KeyCount ? Keys[key] : FaceKeys[key - KeyCount];
+
+    /// <summary>Frozen Block+Face -> primary tile layer (variant 0). Per face: exact override,
+    /// else the base fallback. Every existing caller keeps working.</summary>
     public static int TileIndex(Block b, int face)
     {
         int cell = Cell(b, face);
-        return cell < 0 ? Missing : _resolved[cell];
+        return cell < 0 ? _missingLayer : _resolved[cell];
+    }
+
+    /// <summary>Position-selected tile layer: the primary when the key has one variant, else
+    /// <c>Mix(worldX, worldY, worldZ, localFace) % validCount</c> — absolute world coordinates
+    /// and the block's LOCAL face (design §3).</summary>
+    public static int TileIndex(Block b, int face, int wx, int wy, int wz)
+    {
+        int cell = Cell(b, face);
+        if (cell < 0) return _missingLayer;
+        int[] valid = _validLayers[LayerKey(cell)];
+        if (valid == null || valid.Length == 0) return _resolved[cell];
+        return valid[(int)(Mix(wx, wy, wz, face) % (uint)valid.Length)];
+    }
+
+    /// <summary>The slot layers of one (Block,Face) key, primary first, length >= 1 (design §2).
+    /// Do not mutate: the returned array is the loader's own table.</summary>
+    public static int[] LayersFor(Block b, int face)
+    {
+        int cell = Cell(b, face);
+        return cell < 0 ? new[] { _missingLayer } : _keyLayers[LayerKey(cell)];
     }
 
     /// <summary>Runs discovery and prints the one success line. Never returns null.</summary>
@@ -108,6 +191,8 @@ public static class TexPack
         GD.Print($"texpack: using '{pack.Name}' ({pack.Source}) tile_size={pack.TileSize} tiles={pack.Resolved}/12");
         if (pack.FaceOverrides > 0)
             GD.Print($"texpack: {pack.Source}: {pack.FaceOverrides}/{FaceKeys.Length} per-face overrides");
+        if (pack.VariantKeys > 0)
+            GD.Print($"texpack: {pack.Source}: {pack.Layers} layers, {pack.VariantKeys} keys with variants (cap {MaxVariants})");
         return pack;
     }
 
@@ -230,26 +315,24 @@ public static class TexPack
         }
         catch (Exception) { rootFull = System.IO.Path.GetFullPath("."); }
 
-        var images = new Image[LayerCount];
-        var sources = new TileSource[LayerCount];
-        int resolved = 0;
+        // Parse every declared value first: a string is one variant, an array is the variants
+        // in manifest order (first = primary). `declared[k]` holds up to MaxVariants raw paths;
+        // a null element is a rejected entry that still owns its slot as `missing` (design §4).
+        var declared = new string[LayerCount][];
+        var provided = new bool[LayerCount];
         int faceOverrides = 0;
-        int[] table = (int[])Frozen.Clone();
         if (tiles != null)
         {
             foreach (var key in tiles.Keys)
             {
                 string k = key.AsString();
                 int index = Array.IndexOf(Keys, k);
-                bool faceKey = false;
                 if (index < 0)
                 {
                     int cell = Array.IndexOf(FaceKeys, k);
                     if (cell >= 0)
                     {
                         index = KeyCount + cell;
-                        faceKey = true;
-                        table[index - KeyCount] = index;
                         faceOverrides++;
                     }
                 }
@@ -258,43 +341,136 @@ public static class TexPack
                     GD.PushWarning($"texpack: {root}: unknown tile key '{k}' — ignored");
                     continue;
                 }
+                // Declared, before any value validation: a provided-but-bad override still
+                // claims its cell and shows `missing` (today's documented behaviour).
+                if (index >= KeyCount) provided[index] = true;
+
                 var value = tiles[key];
-                if (value.VariantType != Variant.Type.String || value.AsString().Length == 0)
+                if (value.VariantType == Variant.Type.String)
                 {
-                    GD.PushWarning($"texpack: {root}: tile '{k}' is not a path — using 'missing'");
+                    if (value.AsString().Length > 0) declared[index] = new[] { value.AsString() };
+                    else GD.PushWarning($"texpack: {root}: tile '{k}' is not a path or a list of paths — using 'missing'");
                     continue;
                 }
-                string raw = value.AsString();
-                string path = ResolveTilePath(raw, root, rootFull);
-                if (path == null)
+                if (value.VariantType == Variant.Type.Array)
                 {
-                    GD.PushWarning($"texpack: {root}: tile '{k}': '{raw}' escapes the pack root — using 'missing'");
+                    var entries = value.AsGodotArray();
+                    if (entries.Count == 0)
+                    {
+                        GD.PushWarning($"texpack: {root}: tile '{k}': empty variant list — using 'missing'");
+                        continue;
+                    }
+                    int n = entries.Count;
+                    if (n > MaxVariants)
+                    {
+                        GD.PushWarning($"texpack: {root}: tile '{k}': {n} variants, cap is {MaxVariants} — only the first {MaxVariants} are used");
+                        n = MaxVariants;
+                    }
+                    var paths = new string[n];
+                    for (int i = 0; i < n; i++)
+                    {
+                        var entry = entries[i];
+                        if (entry.VariantType != Variant.Type.String || entry.AsString().Length == 0)
+                        {
+                            GD.PushWarning($"texpack: {root}: tile '{k}'[{i + 1}/{n}]: not a path — using 'missing'");
+                            continue;
+                        }
+                        paths[i] = entry.AsString();
+                    }
+                    declared[index] = paths;
                     continue;
                 }
-                images[index] = ReadTile(path, raw, root, k, tileSize);
-                if (images[index] != null)
-                {
-                    sources[index] = TileSource.Png;
-                    if (!faceKey) resolved++;
-                }
+                GD.PushWarning($"texpack: {root}: tile '{k}' is not a path or a list of paths — using 'missing'");
             }
         }
 
-        // An absent or rejected tile becomes the pack's `missing` tile; with no usable
-        // `missing` tile, that one tile becomes its own procedural colour.
-        for (int i = 0; i < LayerCount; i++)
+        // Decode each declared variant. A failed variant keeps its slot as the pack's `missing`
+        // image (or its procedural colour when there is no `missing`), so the key's other
+        // variants survive (design §4).
+        var decoded = new Image[LayerCount][];
+        for (int k = 0; k < LayerCount; k++)
         {
-            if (images[i] != null) continue;
-            bool useMissing = i != Missing && images[Missing] != null;
-            images[i] = useMissing ? images[Missing] : ProceduralTile(i, tileSize);
-            sources[i] = useMissing ? TileSource.Missing : TileSource.Procedural;
+            var raws = declared[k];
+            if (raws == null) continue;
+            string keyName = KeyName(k);
+            var images = new Image[raws.Length];
+            for (int i = 0; i < raws.Length; i++)
+            {
+                if (raws[i] == null) continue;
+                string label = raws.Length > 1 ? $"'{keyName}'[{i + 1}/{raws.Length}]" : $"'{keyName}'";
+                string path = ResolveTilePath(raws[i], root, rootFull);
+                if (path == null)
+                {
+                    GD.PushWarning($"texpack: {root}: tile {label}: '{raws[i]}' escapes the pack root — using 'missing'");
+                    continue;
+                }
+                images[i] = ReadTile(path, raws[i], root, label, tileSize);
+            }
+            decoded[k] = images;
         }
 
-        // A pack that ships no face override keeps today's 12-layer array; choosing any override
-        // costs the full 60 slots, 48 at once — fixed indices are worth 48 unused layers.
-        int layers = faceOverrides > 0 ? LayerCount : KeyCount;
+        // Frozen key order, base keys first: each enumerated key contributes max(1, declared)
+        // consecutive slots, one per declared variant; a key with no decodable variant degrades
+        // to exactly one slot (today's bad-tile row, design §2/§4). Override cells are only
+        // enumerated when the manifest supplies at least one override key.
+        var keyLayers = new int[LayerCount][];
+        var validLayers = new int[LayerCount][];
+        int total = 0, resolved = 0, variantKeys = 0;
+        for (int k = 0; k < LayerCount; k++)
+        {
+            if (k >= KeyCount && faceOverrides == 0) continue;
+            var images = decoded[k];
+            int n = images?.Length ?? 0;
+            int valid = 0;
+            if (images != null)
+                foreach (var image in images)
+                    if (image != null) valid++;
+            if (valid >= 2) variantKeys++;
+            if (k < KeyCount && valid > 0) resolved++;
+            int slots = valid == 0 ? 1 : n;
+            var layers = new int[slots];
+            var selectable = new int[valid];
+            int next = 0;
+            for (int j = 0; j < slots; j++)
+            {
+                layers[j] = total + j;
+                if (images != null && j < n && images[j] != null) selectable[next++] = total + j;
+            }
+            keyLayers[k] = layers;
+            validLayers[k] = selectable;
+            total += slots;
+        }
+
+        // One fixed global fallback: the `missing` key's first decodable variant. Never
+        // position-selected; procedural colours only when even `missing` did not decode.
+        Image fallback = null;
+        if (decoded[Missing] != null)
+            foreach (var image in decoded[Missing])
+                if (image != null) { fallback = image; break; }
+
+        var packed = new Image[total];
+        var sources = new TileSource[total];
+        for (int k = 0; k < LayerCount; k++)
+        {
+            if (keyLayers[k] == null) continue;
+            var images = decoded[k];
+            int n = images?.Length ?? 0;
+            for (int j = 0; j < keyLayers[k].Length; j++)
+            {
+                int layer = keyLayers[k][j];
+                if (images != null && j < n && images[j] != null)
+                {
+                    packed[layer] = images[j];
+                    sources[layer] = TileSource.Png;
+                    continue;
+                }
+                packed[layer] = fallback ?? ProceduralTile(k, tileSize);
+                sources[layer] = fallback != null ? TileSource.Missing : TileSource.Procedural;
+            }
+        }
+
         var list = new Godot.Collections.Array<Image>();
-        for (int i = 0; i < layers; i++) list.Add(images[i]);
+        for (int i = 0; i < total; i++) list.Add(packed[i]);
         var array = new Texture2DArray();
         Error err = array.CreateFromImages(list);
         if (err != Error.Ok || array.GetLayers() == 0)
@@ -303,17 +479,33 @@ public static class TexPack
             return Procedural();
         }
 
+        // The 48-cell table is the frozen base mapping; only a declared override claims its cell.
+        // Undeclared override cells still own their fixed slots but resolve to the base key.
+        var table = new int[Frozen.Length];
+        for (int c = 0; c < table.Length; c++)
+            table[c] = keyLayers[provided[KeyCount + c] ? KeyCount + c : Frozen[c]][0];
+
         _resolved = table;
+        _keyLayers = keyLayers;
+        _validLayers = validLayers;
+        _missingLayer = keyLayers[Missing][0];
+        _provided = provided;
+
         return new Pack
         {
             Array = array, TileSize = tileSize, Name = name, Source = root, Resolved = resolved,
-            FaceOverrides = faceOverrides, Sources = sources,
+            FaceOverrides = faceOverrides, Sources = sources, Layers = total,
+            VariantKeys = variantKeys, KeyLayers = keyLayers,
         };
     }
 
     private static Pack Procedural()
     {
         _resolved = Frozen;
+        _keyLayers = FrozenSlots();
+        _validLayers = _keyLayers;
+        _missingLayer = Missing;
+        _provided = new bool[LayerCount];
         var list = new Godot.Collections.Array<Image>();
         var sources = new TileSource[KeyCount];
         for (int i = 0; i < KeyCount; i++)
@@ -334,12 +526,14 @@ public static class TexPack
             Resolved = KeyCount,
             Procedural = true,
             Sources = sources,
+            Layers = KeyCount,
+            KeyLayers = _keyLayers,
         };
     }
 
     // ---- tile reading ----------------------------------------------------
 
-    private static Image ReadTile(string path, string raw, string root, string key, int size)
+    private static Image ReadTile(string path, string raw, string root, string label, int size)
     {
         Image image;
         if (path.StartsWith("res://"))
@@ -349,7 +543,7 @@ public static class TexPack
             image = ResourceLoader.Exists(path) ? ResourceLoader.Load<Texture2D>(path)?.GetImage() : null;
             if (image == null)
             {
-                GD.PushWarning($"texpack: {root}: tile '{key}': not a decodable PNG: {raw} — using 'missing'");
+                GD.PushWarning($"texpack: {root}: tile {label}: not a decodable PNG: {raw} — using 'missing'");
                 return null;
             }
         }
@@ -358,20 +552,20 @@ public static class TexPack
             byte[] bytes = FileAccess.GetFileAsBytes(path);
             if (bytes == null)
             {
-                GD.PushWarning($"texpack: {root}: tile '{key}': file not found: {raw} — using 'missing'");
+                GD.PushWarning($"texpack: {root}: tile {label}: file not found: {raw} — using 'missing'");
                 return null;
             }
             image = new Image();
             if (image.LoadPngFromBuffer(bytes) != Error.Ok)
             {
-                GD.PushWarning($"texpack: {root}: tile '{key}': not a decodable PNG: {raw} — using 'missing'");
+                GD.PushWarning($"texpack: {root}: tile {label}: not a decodable PNG: {raw} — using 'missing'");
                 return null;
             }
         }
 
         if (image.GetWidth() != size || image.GetHeight() != size)
         {
-            GD.PushWarning($"texpack: {root}: tile '{key}': {image.GetWidth()}x{image.GetHeight()} does not match tile_size {size} — using 'missing'");
+            GD.PushWarning($"texpack: {root}: tile {label}: {image.GetWidth()}x{image.GetHeight()} does not match tile_size {size} — using 'missing'");
             return null;
         }
 
@@ -383,8 +577,9 @@ public static class TexPack
 
     private static Image ProceduralTile(int index, int size)
     {
+        // Variant slots can outnumber the 12 fallback colours; base keys keep theirs.
         var image = Image.CreateEmpty(size, size, false, Image.Format.Rgba8);
-        image.Fill(FallbackColors[index]);
+        image.Fill(FallbackColors[index % FallbackColors.Length]);
         return image;
     }
 

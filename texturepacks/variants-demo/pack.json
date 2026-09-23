@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "tile_size": 16,
+  "tiles": {
+    "stone": [
+      "tiles/stone_0.png",
+      "tiles/stone_1.png",
+      "tiles/stone_2.png",
+      "tiles/stone_3.png"
+    ],
+    "dirt": [
+      "tiles/dirt_0.png",
+      "tiles/dirt_1.png",
+      "tiles/dirt_2.png"
+    ],
+    "bedrock": "tiles/bedrock.png",
+    "grass_bottom": "tiles/grass_bottom.png",
+    "grass_side": "tiles/grass_side.png",
+    "grass_top": "tiles/grass_top.png",
+    "leaves": "tiles/leaves.png",
+    "missing": "tiles/missing.png",
+    "plank": "tiles/plank.png",
+    "sand": "tiles/sand.png",
+    "wood_side": "tiles/wood_side.png",
+    "wood_top": "tiles/wood_top.png"
+  }
+}
