@@ -83,7 +83,7 @@ src/Game.cs              bootstrap, HUD, sky/fog, test-mode entry points
 src/SelfTest.cs          headless assertions
 src/Bench.cs             performance run
 src/Prof.cs              per-system frame accumulators used by --bench
-docs/                    architecture, performance, roadmap, texture-packs, adding-a-block
+docs/                    architecture, performance, roadmap, texture-packs, adding-a-block, testing
 ```
 
 ## Design in one screen
@@ -131,6 +131,7 @@ and the known weaknesses — is in **[docs/architecture.md](docs/architecture.md
 | [docs/roadmap.md](docs/roadmap.md) | unlimited dimensions, tools and drops, why per-world parallel tick is the wrong axis |
 | [docs/texture-packs.md](docs/texture-packs.md) | texture pack format: twelve tile keys, `pack.json`, path-traversal rules, discovery rungs, failure matrix, non-goals |
 | [docs/adding-a-block.md](docs/adding-a-block.md) | the reusable recipe for adding a block: append-only vocabulary, art, guards, assertions |
+| [docs/testing.md](docs/testing.md) | the two test tiers (headless vs rendered), how to run locally and in CI, the scenario table, what the harness cannot cover |
 
 ## Performance in one paragraph
 
