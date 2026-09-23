@@ -6,7 +6,7 @@ out of src/TexPack.cs, and the mapping table out of docs/texture-packs.md, and a
 
   (a) every Block except Air x every Face index 0..5 appears exactly once in the table
   (b) every tile key used is one of the 12 frozen canonical base keys
-  (c) table row count == 48
+  (c) table row count == 54
   (d) the TileIndex column equals the frozen index for that key
   (e) the key matches the frozen per-block mapping rule
   (f) ChunkMesher.Dirs order matches the Face constants (see EXPECTED_DIRS)
@@ -14,7 +14,7 @@ out of src/TexPack.cs, and the mapping table out of docs/texture-packs.md, and a
       row's Block and Face, at the no-variant baseline layer 12 + blockOrdinal*6 + faceIndex
   (h) src/TexPack.cs still declares the frozen vocabulary: KeyCount 12, the same 12 Keys in
       order, the same Renderable and FaceSuffix order, LayerCount as KeyCount +
-      FaceKeys.Length, and the same 48 ints in its Frozen fallback table
+      FaceKeys.Length, and the same 54 ints in its Frozen fallback table
 
 (g)/(h) together pin the **no-variant, no-class baseline layout and the frozen key order**: base
 key k -> layer k, override cell c -> layer 12 + c, and LayerCount = KeyCount + FaceKeys.Length
@@ -43,10 +43,10 @@ TILE_KEYS = {
     "wood_side": 6, "wood_top": 7, "plank": 8, "leaves": 9, "bedrock": 10, "missing": 11,
 }
 # Frozen per-face override layout: suffixes in Face order (PosX=0 … NegZ=5), cells in
-# Renderable order, layer = 12 + blockOrdinal*6 + faceIndex (12..59) — the no-variant
+# Renderable order, layer = 12 + blockOrdinal*6 + faceIndex (12..65) — the no-variant
 # baseline; a key with variants shifts every later key's layers.
 FACE_SUFFIXES = ["posx", "negx", "top", "bottom", "posz", "negz"]
-RENDERABLE_BLOCKS = ["Stone", "Dirt", "Grass", "Sand", "Wood", "Plank", "Leaves", "Bedrock"]
+RENDERABLE_BLOCKS = ["Stone", "Dirt", "Grass", "Sand", "Wood", "Plank", "Leaves", "Bedrock", "Chest"]
 OVERRIDE_LAYER_BASE = len(TILE_KEYS)
 FACE_KEYS = {
     f"{block.lower()}_{FACE_SUFFIXES[face]}": OVERRIDE_LAYER_BASE + block_ord * 6 + face
@@ -61,8 +61,8 @@ EXPECTED_DIRS = {
     "Bottom": (0, -1, 0), "PosZ": (0, 0, 1), "NegZ": (0, 0, -1),
 }
 UNIFORM = {"Stone": "stone", "Dirt": "dirt", "Sand": "sand",
-           "Plank": "plank", "Leaves": "leaves", "Bedrock": "bedrock"}
-EXPECTED_ROWS = 48
+           "Plank": "plank", "Leaves": "leaves", "Bedrock": "bedrock", "Chest": "plank"}
+EXPECTED_ROWS = 54
 
 FAILS = []
 

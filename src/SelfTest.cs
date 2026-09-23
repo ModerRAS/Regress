@@ -11,6 +11,10 @@ public static class SelfTest
 {
     private static int _failures;
 
+    /// <summary>Highest Block value, derived so a new enum tail can never be silently skipped
+    /// by the all-block sweeps below.</summary>
+    private static readonly int LastBlockIndex = (int)Enum.GetValues<Block>()[^1];
+
     public static int Run(VoxelWorld world)
     {
         _failures = 0;
@@ -587,44 +591,48 @@ public static class SelfTest
 
         // -- the type tables -------------------------------------------------
         int aliasWrong = 0, anyBlocks = 0, aliasUnmirrored = 0;
-        int grassSize = 0, grassUpright = 0;
-        for (int b = 1; b <= (int)Block.Bedrock; b++)
+        int grassSize = 0, grassUpright = 0, chestSize = 0, chestUpright = 0;
+        for (int b = 1; b <= LastBlockIndex; b++)
         {
             var block = (Block)b;
             if (Blocks.Allows(block, Orientation.IdentityDuplicate) != Blocks.Allows(block, Orientation.None)) aliasWrong++;
             if ((Blocks.OrientationMask(block) & (1u << Orientation.IdentityDuplicate)) != 0
                 && (Blocks.OrientationMask(block) & 1u) == 0) aliasUnmirrored++;
             int size = AllowedCount(block);
-            if (block == Block.Grass)
+            if (block == Block.Grass || block == Block.Chest)
             {
-                grassSize = size;
+                int upright = 0;
                 for (int value = 0; value <= Orientation.Count; value++)
                     if (value != Orientation.IdentityDuplicate && Blocks.Allows(block, (byte)value)
-                        && Orientation.ImageOfLocalAxis((byte)value, 1) == Vector3I.Up) grassUpright++;
+                        && Orientation.ImageOfLocalAxis((byte)value, 1) == Vector3I.Up) upright++;
+                if (block == Block.Grass) { grassSize = size; grassUpright = upright; }
+                else { chestSize = size; chestUpright = upright; }
             }
             else if (Blocks.PolicyOf(block) == OrientationPolicy.Any && size == Orientation.Count) anyBlocks++;
         }
         Check(grassSize == 4 && grassUpright == 4 && Blocks.PolicyOf(Block.Grass) == OrientationPolicy.Upright,
             $"Grass allows exactly 4 upright orientations ({grassSize} allowed, {grassUpright} upright)");
-        Check(anyBlocks == 7, $"{anyBlocks}/7 other blocks are Any(24)");
-        Check(aliasWrong == 0, "8/8 blocks answer Allows identically for the identity's two bytes");
+        Check(chestSize == 4 && chestUpright == 4 && Blocks.PolicyOf(Block.Chest) == OrientationPolicy.Upright,
+            $"Chest allows exactly 4 upright orientations ({chestSize} allowed, {chestUpright} upright)");
+        Check(anyBlocks == 7, $"{anyBlocks}/7 non-Grass, non-Chest blocks are Any(24)");
+        Check(aliasWrong == 0, $"{LastBlockIndex - aliasWrong}/{LastBlockIndex} blocks answer Allows identically for the identity's two bytes");
         Check(aliasUnmirrored == 0, "the semantic mask always mirrors byte 9 from byte 0");
         Check(Blocks.OrientationMask(Block.Stone) == (1u << (Orientation.Count + 1)) - 1u,
             "Any's semantic mask is all 25 bytes");
 
         // -- policy totality and snapping ------------------------------------
         int snapTotal = 0, snapTotalWrong = 0;
-        for (int b = 1; b <= (int)Block.Bedrock; b++)
+        for (int b = 1; b <= LastBlockIndex; b++)
             for (int value = 0; value <= Orientation.Count; value++)
             {
                 snapTotal++;
                 if (!Blocks.Allows((Block)b, Blocks.Snap((Block)b, (byte)value))) snapTotalWrong++;
             }
-        Check(snapTotalWrong == 0, $"{snapTotal}/{snapTotal} Snap results satisfy Allows over 8 blocks x 25 bytes");
+        Check(snapTotalWrong == 0, $"{snapTotal}/{snapTotal} Snap results satisfy Allows over {LastBlockIndex} blocks x 25 bytes");
 
         byte[] strangers = { 25, 26, 200, 255 };
         int strangerTotal = 0, strangerWrong = 0;
-        for (int b = 1; b <= (int)Block.Bedrock; b++)
+        for (int b = 1; b <= LastBlockIndex; b++)
             foreach (byte stranger in strangers)
             {
                 strangerTotal++;
@@ -646,7 +654,7 @@ public static class SelfTest
         Check(snapWrong == 0, $"{snapPoses}/{snapPoses} sampled poses snap to an allowed Grass orientation");
 
         int defaults = 0, defaultsWrong = 0;
-        for (int b = 1; b <= (int)Block.Bedrock; b++)
+        for (int b = 1; b <= LastBlockIndex; b++)
             for (int f = 0; f < 6; f++)
                 for (int yi = 0; yi < 16; yi++)
                     for (int pi = 0; pi < 9; pi++)
@@ -692,15 +700,18 @@ public static class SelfTest
         Check(stoneCycle == 24, $"24/24 allowed Stone orientations are reachable from its rule default ({stoneCycle}/24)");
 
         int blockCycles = 0;
-        for (int b = 1; b <= (int)Block.Bedrock; b++)
+        for (int b = 1; b <= LastBlockIndex; b++)
             if (WalkAllowed((Block)b, Blocks.NextAllowed((Block)b, Orientation.None)) == AllowedCount((Block)b)) blockCycles++;
-        Check(blockCycles == 8, $"{blockCycles}/8 blocks cycle through exactly their allowed set");
+        Check(blockCycles == LastBlockIndex, $"{blockCycles}/{LastBlockIndex} blocks cycle through exactly their allowed set");
 
         // -- the placement rule -----------------------------------------------
         int placementWrong = 0;
-        for (int b = 0; b <= (int)Block.Bedrock; b++)
-            if (Blocks.PlacementOf((Block)b) != ((Block)b == Block.Wood ? Placement.Axis : Placement.None)) placementWrong++;
-        Check(placementWrong == 0, "PlacementOf is Axis for Wood and None for the other 8 blocks");
+        for (int b = 0; b <= LastBlockIndex; b++)
+        {
+            var want = (Block)b == Block.Wood ? Placement.Axis : (Block)b == Block.Chest ? Placement.Face : Placement.None;
+            if (Blocks.PlacementOf((Block)b) != want) placementWrong++;
+        }
+        Check(placementWrong == 0, "PlacementOf is Axis for Wood, Face for Chest, and None for the other 8 types");
 
         int noneDefault = 0;
         for (int f = 0; f < 6; f++)
@@ -913,7 +924,7 @@ public static class SelfTest
         // -- storage ----------------------------------------------------------
         int stored = 0, storageWrong = 0;
         var storeCell = new Vector3I(6, 3001, 6);
-        for (int b = 1; b <= (int)Block.Bedrock; b++)
+        for (int b = 1; b <= LastBlockIndex; b++)
             for (int i = 0; i < Orientation.Count; i++)
             {
                 stored++;
@@ -1072,7 +1083,13 @@ public static class SelfTest
 
     private static void CheckTileIndexMap()
     {
-        // The frozen 48-cell table from docs/texture-packs.md, rows by (int)Block, cols by Face.
+        // The default pack is what Game loads before Run (unless --pack= is passed), and it now
+        // declares the six chest overrides. Load it explicitly so this map check is deterministic.
+        TexPack.Load("res://texturepacks/default");
+
+        // The frozen 54-cell fallback table from docs/texture-packs.md, rows by (int)Block,
+        // cols by Face. The six chest cells' frozen fallback is the plank row (8); the default
+        // pack's declared overrides resolve those cells to 60..65 instead (resolved != fallback).
         int[,] expected =
         {
             { 11, 11, 11, 11, 11, 11 }, // Air: never meshed -> missing (magenta)
@@ -1084,12 +1101,19 @@ public static class SelfTest
             { 8, 8, 8, 8, 8, 8 },       // Plank
             { 9, 9, 9, 9, 9, 9 },       // Leaves
             { 10, 10, 10, 10, 10, 10 }, // Bedrock
+            { 8, 8, 8, 8, 8, 8 },       // Chest: fallback is the plank row, overridden to 60..65 by the default pack
         };
         int bad = 0;
-        for (int b = 0; b <= (int)Block.Bedrock; b++)
+        for (int b = 0; b <= LastBlockIndex; b++)
             for (int f = 0; f < 6; f++)
-                if (TexPack.TileIndex((Block)b, f) != expected[b, f]) bad++;
-        Check(bad == 0, $"48-cell Block+Face -> tile index map is the frozen table ({bad} wrong)");
+            {
+                // The frozen row is what a pack without chest overrides resolves to (asserted by
+                // CheckFaceOverrides / CheckTextureVariants' base-only packs); the default pack's
+                // declared override wins, so the resolved cell is KeyCount + 48 + f.
+                int want = (Block)b == Block.Chest ? TexPack.KeyCount + 48 + f : expected[b, f];
+                if (TexPack.TileIndex((Block)b, f) != want) bad++;
+            }
+        Check(bad == 0, $"54-cell Block+Face map: 48 frozen cells + the 6 default-pack chest overrides at 60..65 ({bad} wrong)");
         Check(TexPack.TileIndex(Block.Bedrock, Face.Top) == 10,
             "bedrock is covered from the Block enum, not Blocks.Palette");
     }
@@ -1099,7 +1123,7 @@ public static class SelfTest
         string baseDir = ProjectSettings.GlobalizePath("user://texpack_selftest");
         if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
 
-        // The frozen 48-cell table, rows by Renderable order, cols by Face (PosX..NegZ).
+        // The frozen 54-cell table, rows by Renderable order, cols by Face (PosX..NegZ).
         int[] frozen =
         {
             0, 0, 0, 0, 0, 0,        // Stone
@@ -1110,6 +1134,7 @@ public static class SelfTest
             8, 8, 8, 8, 8, 8,        // Plank
             9, 9, 9, 9, 9, 9,        // Leaves
             10, 10, 10, 10, 10, 10,  // Bedrock
+            8, 8, 8, 8, 8, 8,        // Chest: frozen fallback is the plank row
         };
 
         // (a) A base-only pack resolves every cell to the frozen table.
@@ -1120,10 +1145,10 @@ public static class SelfTest
         int wrong = FrozenMismatches(frozen);
         Check(plain.Source == baseOnly && plain.FaceOverrides == 0 && plain.Array.GetLayers() == TexPack.KeyCount
             && wrong == 0,
-            $"base-only pack keeps the frozen 48-cell map in {TexPack.KeyCount} layers ({wrong} wrong)");
+            $"base-only pack keeps the frozen 54-cell map in {TexPack.KeyCount} layers ({wrong} wrong)");
         Check(TexPack.TileIndex(Block.Air, 0) == 11, "Air still resolves to the missing tile (11)");
 
-        // (b) `stone_top` claims cell 2 as layer KeyCount + 2; the other 47 cells hold.
+        // (b) `stone_top` claims cell 2 as layer KeyCount + 2; the other 53 cells hold.
         string faceOne = baseDir + "/faceone";
         WritePack(faceOne, 1, AllTiles() + ", \"stone_top\": \"tiles/stone_top.png\"");
         for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(faceOne, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
@@ -1171,18 +1196,29 @@ public static class SelfTest
             && wrong == 0,
             $"a later base-only pack clears the override ({wrong} wrong)");
 
-        // (iii) The pack-less fall-through commits the frozen table. Rung 3 is
-        // res://texturepacks/default here; `Procedural()` only wins where it is absent.
+        // (iii) The pack-less fall-through commits the fall-through pack's own table. Rung 3 is
+        // res://texturepacks/default here, which since Chest ships its own six overrides resolves
+        // those six cells at KeyCount + cell; every other cell is the frozen base. What this pins
+        // is that no override from the previously loaded pack survives.
         var fallback = TexPack.Load(baseDir + "/does_not_exist");
-        wrong = FrozenMismatches(frozen);
+        int stale = 0;
+        for (int b = 0; b < TexPack.Renderable.Length; b++)
+            for (int f = 0; f < 6; f++)
+            {
+                bool chest = TexPack.Renderable[b] == Block.Chest;
+                int want = fallback.Procedural || !chest
+                    ? frozen[b * 6 + f]
+                    : TexPack.KeyCount + 48 + f;
+                if (TexPack.TileIndex(TexPack.Renderable[b], f) != want) stale++;
+            }
         Check((fallback.Procedural || fallback.Source == "res://texturepacks/default")
-            && wrong == 0 && TexPack.TileIndex(Block.Stone, Face.Top) == 0,
-            $"a pack-less fall-through clears the override ({fallback.Source}, {wrong} wrong)");
+            && stale == 0 && TexPack.TileIndex(Block.Stone, Face.Top) == 0,
+            $"a pack-less fall-through clears the stale override ({fallback.Source}, {stale} wrong)");
 
         if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
     }
 
-    /// <summary>How many of the 48 (Block,Face) cells disagree with the frozen literal table.</summary>
+    /// <summary>How many of the 54 (Block,Face) cells disagree with the frozen literal table.</summary>
     private static int FrozenMismatches(int[] frozen)
     {
         int wrong = 0;
@@ -1496,7 +1532,7 @@ public static class SelfTest
         Check(canonical == 24, $"the canonical space holds 24 values (byte 9 excluded) ({canonical})");
 
         int countWrong = 0;
-        for (int b = 1; b <= (int)Block.Bedrock; b++)
+        for (int b = 1; b <= LastBlockIndex; b++)
         {
             int expected = Blocks.PolicyOf((Block)b) switch
             {
@@ -1522,7 +1558,7 @@ public static class SelfTest
         // -- the rotate keys reach exactly the allowed set -------------------
         int distinctWrong = 0, illegalWrong = 0, wrapWrong = 0, inverseWrong = 0;
         var seen = new HashSet<int>();
-        for (int b = 1; b <= (int)Block.Bedrock; b++)
+        for (int b = 1; b <= LastBlockIndex; b++)
         {
             var block = (Block)b;
             int allowed = AllowedCount(block);
@@ -1553,9 +1589,9 @@ public static class SelfTest
             if (seen.Count != allowed) distinctWrong++;
             if (state.PendingOrientation != start) wrapWrong++;
         }
-        Check(distinctWrong == 0, $"{8 - distinctWrong}/8 blocks visit exactly |allowed| distinct states (24/24 Any, 4/4 Grass)");
+        Check(distinctWrong == 0, $"{LastBlockIndex - distinctWrong}/{LastBlockIndex} blocks visit exactly |allowed| distinct states (24/24 Any, 4/4 Grass, 4/4 Chest)");
         Check(illegalWrong == 0, $"every state the rotate keys produce is canonical and Allows-legal ({illegalWrong} bad)");
-        Check(wrapWrong == 0, $"|allowed| presses wrap back to the start on all 8 blocks ({wrapWrong} wrong)");
+        Check(wrapWrong == 0, $"|allowed| presses wrap back to the start on all {LastBlockIndex} blocks ({wrapWrong} wrong)");
         Check(inverseWrong == 0, $"Q then E returns to the previous state ({inverseWrong} wrong)");
 
         state.Selected = Block.Stone;
@@ -1765,6 +1801,7 @@ public static class SelfTest
         if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
 
         // E4: no-variant packs keep the pre-variants layout — layer numbers, not "it renders".
+        // 54 cells: the Chest row's fallback is the plank row (8), same as the frozen table.
         int[] frozen =
         {
             0, 0, 0, 0, 0, 0,        // Stone
@@ -1775,6 +1812,7 @@ public static class SelfTest
             8, 8, 8, 8, 8, 8,        // Plank
             9, 9, 9, 9, 9, 9,        // Leaves
             10, 10, 10, 10, 10, 10,  // Bedrock
+            8, 8, 8, 8, 8, 8,        // Chest: frozen fallback is the plank row
         };
         string baseOnly = baseDir + "/varbase";
         WritePack(baseOnly, 1, AllTiles());
@@ -1807,7 +1845,7 @@ public static class SelfTest
                 if (got.Length != 1 || got[0] != want) wrong++;
             }
         Check(wrong == 0 && over.Array.GetLayers() == TexPack.LayerCount && over.Layers == TexPack.LayerCount,
-            $"E4 override pack: stone_top owns layer {TexPack.KeyCount + 2}, the other 47 cells stay frozen ({wrong} wrong)");
+            $"E4 override pack: stone_top owns layer {TexPack.KeyCount + 2}, the other 53 cells stay frozen ({wrong} wrong)");
 
         // A variant pack changes the array size: stone x4 + 11 singles = 15 layers.
         string varied = baseDir + "/var4";
@@ -1918,7 +1956,7 @@ public static class SelfTest
         string baseDir = ProjectSettings.GlobalizePath("user://texpack_selftest");
         if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
 
-        // The frozen 48-cell table, rows by Renderable order, cols by Face (PosX..NegZ).
+        // The frozen 54-cell table, rows by Renderable order, cols by Face (PosX..NegZ).
         int[] frozen =
         {
             0, 0, 0, 0, 0, 0,        // Stone
@@ -1929,28 +1967,33 @@ public static class SelfTest
             8, 8, 8, 8, 8, 8,        // Plank
             9, 9, 9, 9, 9, 9,        // Leaves
             10, 10, 10, 10, 10, 10,  // Bedrock
+            8, 8, 8, 8, 8, 8,        // Chest: frozen fallback is the plank row
         };
 
-        // E10: the real default pack is one class, and every cell is byte-identical to the
-        // Phase-1 layout — class 0, frozen layer numbers, class-0 array = the whole array.
+        // E10: the real default pack is one class; the old cells are byte-identical to the
+        // Phase-1 layout and the six chest cells resolve through the pack's declared overrides.
         const string defaultPack = "res://texturepacks/default";
         var def = TexPack.Load(defaultPack);
         int classWrong = 0, layerWrong = 0, mapWrong = 0;
         for (int b = 0; b < TexPack.Renderable.Length; b++)
             for (int f = 0; f < 6; f++)
             {
+                bool chest = TexPack.Renderable[b] == Block.Chest;
+                int want = chest ? TexPack.KeyCount + 48 + f : frozen[b * 6 + f];
                 if (TexPack.TileAt(TexPack.Renderable[b], f, 0, 0, 0).Class != 0) classWrong++;
-                if (TexPack.TileIndex(TexPack.Renderable[b], f) != frozen[b * 6 + f]) mapWrong++;
+                if (TexPack.TileIndex(TexPack.Renderable[b], f) != want) mapWrong++;
                 var got = TexPack.LayersFor(TexPack.Renderable[b], f);
-                if (got.Length != 1 || got[0] != frozen[b * 6 + f]) layerWrong++;
+                if (got.Length != 1 || got[0] != want) layerWrong++;
             }
         int defPng = 0;
         foreach (var source in def.Sources) if (source == TexPack.TileSource.Png) defPng++;
         Check(def.Source == defaultPack && def.Classes == 1 && def.Arrays.Length == 1
-            && def.Array.GetLayers() == TexPack.KeyCount && def.Layers == TexPack.KeyCount
-            && def.ClassLayers[0] == TexPack.KeyCount && def.ClassSizes[0] == def.TileSize
-            && classWrong == 0 && mapWrong == 0 && layerWrong == 0 && defPng == TexPack.KeyCount,
-            $"E10 default pack: 1 size class, all 48 cells class 0 with the frozen layers ({mapWrong} map, {layerWrong} layer, {defPng}/{TexPack.KeyCount} Png)");
+            && def.Array.GetLayers() == TexPack.LayerCount && def.Layers == TexPack.LayerCount
+            && def.ClassLayers[0] == TexPack.LayerCount && def.ClassSizes[0] == def.TileSize
+            && def.FaceOverrides == 6
+            && classWrong == 0 && mapWrong == 0 && layerWrong == 0 && defPng == TexPack.KeyCount + 6,
+            $"E10 default pack: 1 size class, {TexPack.LayerCount} layers, {defPng} Png, 6/54 chest overrides "
+            + $"({mapWrong} map, {layerWrong} layer)");
 
         // E11: 3 classes (16/32/64). Every face routes to its key's class, the class edge is the
         // PNG edge, and the layer exists in that class's array.
@@ -2298,18 +2341,18 @@ public static class SelfTest
         }
 
         // 1. predicate/table ---------------------------------------------------
-        Check(BlockInteractions.IsInteractable(Block.Plank) && BlockInteractions.KindOf(Block.Plank) == InteractKind.Toggle,
-            "Plank is interactive and its dispatch kind is Toggle");
+        Check(BlockInteractions.IsInteractable(Block.Chest) && BlockInteractions.KindOf(Block.Chest) == InteractKind.Toggle,
+            "Chest is interactive and its dispatch kind is Toggle");
         Check(!BlockInteractions.IsInteractable(Block.Stone) && !BlockInteractions.IsInteractable(Block.Air),
             "Stone and Air are not interactive");
 
         // 2. the real request pipeline creates the entity ----------------------
-        world.RequestEdit(EditRequest.Place(cell, Block.Plank, default));
-        Check(world.ApplyPendingEdits() == 1, "a plank place request through the pipeline is applied");
-        Check(registry.Contains(cell), "the placed plank has a block entity");
-        bool hasEntity = registry.TryGet(cell, out var plankEntity);
-        Check(hasEntity && plankEntity.GetComponent<BlockPos>().Vector == cell
-              && plankEntity.GetComponent<Interactable>().Kind == InteractKind.Toggle,
+        world.RequestEdit(EditRequest.Place(cell, Block.Chest, default));
+        Check(world.ApplyPendingEdits() == 1, "a chest place request through the pipeline is applied");
+        Check(registry.Contains(cell), "the placed chest has a block entity");
+        bool hasEntity = registry.TryGet(cell, out var placedChest);
+        Check(hasEntity && placedChest.GetComponent<BlockPos>().Vector == cell
+              && placedChest.GetComponent<Interactable>().Kind == InteractKind.Toggle,
             "the entity carries its cell in BlockPos and the Toggle dispatch key");
 
         // 3. non-interactive blocks cost nothing -------------------------------
@@ -2328,12 +2371,12 @@ public static class SelfTest
         int bucketsBeforeBreak = registry.ChunkBucketCount;
         world.SetBlock(cell.X, cell.Y, cell.Z, Block.Air);
         Check(!registry.Contains(cell) && VisitCount(registry) == visitedBeforeBreak - 1,
-            "breaking the plank removes its block entity");
+            "breaking the chest removes its block entity");
         Check(registry.ChunkBucketCount == bucketsBeforeBreak - 1, "the emptied chunk bucket is gone, not stale");
 
         // ...and the same once more through the request pipeline.
         var pipeCell = new Vector3I(bx + 2, by, bz);
-        world.RequestEdit(EditRequest.Place(pipeCell, Block.Plank, default));
+        world.RequestEdit(EditRequest.Place(pipeCell, Block.Chest, default));
         world.ApplyPendingEdits();
         Check(registry.Contains(pipeCell), "a pipeline place recreates the entity");
         world.RequestEdit(EditRequest.Break(pipeCell, default));
@@ -2349,7 +2392,7 @@ public static class SelfTest
             int lx = (int)((rng >> 8) & 15u);
             int lz = (int)((rng >> 20) & 15u);
             int pick = (int)((rng >> 16) % 3u);
-            var block = pick == 0 ? Block.Plank : pick == 1 ? Block.Stone : Block.Air;
+            var block = pick == 0 ? Block.Chest : pick == 1 ? Block.Stone : Block.Air;
             var random = new Vector3I(bx + chunkOffset * 16 + lx, by, bz + lz);
             world.SetBlock(random.X, random.Y, random.Z, block);
         }
@@ -2382,10 +2425,10 @@ public static class SelfTest
             var bytes = rawChunk.GetComponent<ChunkBlocks>().Value;
             int rawIndex = ChunkBlocks.Index(rawCell.X - rawKey.X * VoxelWorld.ChunkSize,
                 rawCell.Y - rawKey.Y * VoxelWorld.ChunkSize, rawCell.Z - rawKey.Z * VoxelWorld.ChunkSize);
-            bytes[rawIndex] = (byte)Block.Plank; // bypasses SetBlock: the entity side is deliberately not synced
+            bytes[rawIndex] = (byte)Block.Chest; // bypasses SetBlock: the entity side is deliberately not synced
             registry.Audit(world, new[] { rawKey }, out int rawBytes, out int rawEntities);
             Check(rawBytes == 1 && rawEntities == 0,
-                $"a raw plank byte with no entity is caught (bytesWithoutEntity={rawBytes}, entitiesWithoutByte={rawEntities})");
+                $"a raw chest byte with no entity is caught (bytesWithoutEntity={rawBytes}, entitiesWithoutByte={rawEntities})");
             bytes[rawIndex] = (byte)Block.Stone;
             registry.Audit(world, new[] { rawKey }, out rawBytes, out rawEntities);
             Check(rawBytes == 0 && rawEntities == 0, "restoring the byte restores the clean audit");
@@ -2395,9 +2438,9 @@ public static class SelfTest
         // BlockEntityRegistry.TryGet is bucket[chunkKey] then cell - two dictionary probes, never a scan.
         var bigBase = new Vector3I(bx + 32, by, bz);
         for (int i = 0; i < 512; i++)
-            world.SetBlock(bigBase.X + (i & 15), bigBase.Y + (i >> 8), bigBase.Z + ((i >> 4) & 15), Block.Plank);
+            world.SetBlock(bigBase.X + (i & 15), bigBase.Y + (i >> 8), bigBase.Z + ((i >> 4) & 15), Block.Chest);
         var loneCell = new Vector3I(bx + 48, by, bz);
-        world.SetBlock(loneCell.X, loneCell.Y, loneCell.Z, Block.Plank);
+        world.SetBlock(loneCell.X, loneCell.Y, loneCell.Z, Block.Chest);
 
         int probes = registry.Probes;
         bool hitBig = registry.TryGet(new Vector3I(bigBase.X + 5, bigBase.Y, bigBase.Z + 5), out _);
@@ -2423,15 +2466,15 @@ public static class SelfTest
 
         // 9. interaction behaviour ----------------------------------------------
         var toggleCell = new Vector3I(bx + 49, by, bz);
-        world.SetBlock(toggleCell.X, toggleCell.Y, toggleCell.Z, Block.Plank);
+        world.SetBlock(toggleCell.X, toggleCell.Y, toggleCell.Z, Block.Chest);
         BlockInteractions.Reset();
         int version = BlockInteractions.Version;
         bool interacted = BlockInteractions.Interact(world, toggleCell, default);
         bool openFirst = registry.TryGet(toggleCell, out var toggleEntity) && toggleEntity.GetComponent<ToggleState>().Open;
         Check(interacted && openFirst, "interacting returns true and flips ToggleState.Open on");
-        Check(world.GetBlock(toggleCell.X, toggleCell.Y, toggleCell.Z) == Block.Plank,
+        Check(world.GetBlock(toggleCell.X, toggleCell.Y, toggleCell.Z) == Block.Chest,
             "interacting leaves the block byte untouched");
-        Check(BlockInteractions.Message != null && BlockInteractions.Message.Contains("Plank"),
+        Check(BlockInteractions.Message != null && BlockInteractions.Message.Contains("Chest"),
             $"the HUD message names the block (\"{BlockInteractions.Message}\")");
         int versionAfterFirst = BlockInteractions.Version;
         Check(versionAfterFirst > version, $"the interaction bumped Version ({version} -> {versionAfterFirst})");
@@ -2451,21 +2494,21 @@ public static class SelfTest
         // 10. DropChunk (chunk unload) ------------------------------------------
         var dropA = new Vector3I(bx + 65, by, bz);
         var dropB = new Vector3I(bx + 66, by, bz);
-        world.SetBlock(dropA.X, dropA.Y, dropA.Z, Block.Plank);
-        world.SetBlock(dropB.X, dropB.Y, dropB.Z, Block.Plank);
-        Check(registry.Contains(dropA) && registry.Contains(dropB), "two planks in one chunk have entities");
+        world.SetBlock(dropA.X, dropA.Y, dropA.Z, Block.Chest);
+        world.SetBlock(dropB.X, dropB.Y, dropB.Z, Block.Chest);
+        Check(registry.Contains(dropA) && registry.Contains(dropB), "two chests in one chunk have entities");
         int bucketsBeforeDrop = registry.ChunkBucketCount;
         registry.DropChunk(world.Store, VoxelWorld.ChunkKeyOf(dropA.X, dropA.Y, dropA.Z));
         Check(!registry.Contains(dropA) && !registry.Contains(dropB), "DropChunk removes every entity of the chunk");
         Check(registry.ChunkBucketCount == bucketsBeforeDrop - 1, "DropChunk removes the chunk bucket");
 
         // DropChunk is only correct when the chunk entity itself is going away, which is what
-        // unload does. The bytes here are still Plank, and a plain re-place is a no-op write,
+        // unload does. The bytes here are still Chest, and a plain re-place is a no-op write,
         // so clear the byte first to make the re-place a real transition.
         world.SetBlock(dropA.X, dropA.Y, dropA.Z, Block.Air);
-        world.SetBlock(dropA.X, dropA.Y, dropA.Z, Block.Plank);
+        world.SetBlock(dropA.X, dropA.Y, dropA.Z, Block.Chest);
         world.SetBlock(dropB.X, dropB.Y, dropB.Z, Block.Air);
-        world.SetBlock(dropB.X, dropB.Y, dropB.Z, Block.Plank);
+        world.SetBlock(dropB.X, dropB.Y, dropB.Z, Block.Chest);
         Check(registry.Contains(dropA) && registry.Contains(dropB),
             "re-placing restores the entities, so the world is left consistent");
 
@@ -2477,7 +2520,7 @@ public static class SelfTest
         ulong started = Time.GetTicksUsec();
         for (int i = 0; i < 2000; i++)
         {
-            world.SetBlock(cycleCell.X, cycleCell.Y, cycleCell.Z, Block.Plank);
+            world.SetBlock(cycleCell.X, cycleCell.Y, cycleCell.Z, Block.Chest);
             world.SetBlock(cycleCell.X, cycleCell.Y, cycleCell.Z, Block.Air);
         }
         ulong elapsedUs = Time.GetTicksUsec() - started;
@@ -2490,6 +2533,129 @@ public static class SelfTest
         }
         int plainLeft = registry.Count - afterCycles;
         Check(leftOver == 0 && plainLeft == 0 && elapsedUs < 5_000_000,
-            $"ok  block entity: 2000 place+break cycles in {elapsedUs / 1000.0:F1} ms ({elapsedUs / 2000.0:F2} us/cycle), {leftOver} entities left; 2000 non-interactive placements left {plainLeft}");
+            $"ok  block entity: 2000 chest place+break cycles in {elapsedUs / 1000.0:F1} ms ({elapsedUs / 2000.0:F2} us/cycle), {leftOver} entities left; 2000 non-interactive placements left {plainLeft}");
+
+        // ---- Phase B: Chest + the append-only vocabulary -----------------------
+        GD.Print("  ---- chest + vocabulary ----");
+
+        // V1: the 12 canonical keys, frozen order (plank stays index 8).
+        string[] canonicalKeys =
+        {
+            "stone", "dirt", "grass_top", "grass_side", "grass_bottom", "sand",
+            "wood_side", "wood_top", "plank", "leaves", "bedrock", "missing",
+        };
+        bool keysMatch = TexPack.KeyCount == canonicalKeys.Length && TexPack.Keys.Length == canonicalKeys.Length;
+        for (int i = 0; keysMatch && i < canonicalKeys.Length; i++) keysMatch = TexPack.Keys[i] == canonicalKeys[i];
+        Check(keysMatch, $"the 12 canonical keys are unchanged and in frozen order (KeyCount={TexPack.KeyCount})");
+
+        // V2: Renderable is append-only: the 8 old blocks first, Chest at ordinal 8.
+        Block[] oldRenderable = { Block.Stone, Block.Dirt, Block.Grass, Block.Sand, Block.Wood, Block.Plank, Block.Leaves, Block.Bedrock };
+        bool renderableMatch = TexPack.Renderable.Length == 9 && TexPack.Renderable[8] == Block.Chest;
+        for (int i = 0; renderableMatch && i < oldRenderable.Length; i++) renderableMatch = TexPack.Renderable[i] == oldRenderable[i];
+        Check(renderableMatch, $"Renderable appends Chest at ordinal 8 after the old 8 in order (length={TexPack.Renderable.Length})");
+
+        // V3: the 54-cell frozen fallback table lives once, in CheckTileIndexMap; its Chest row
+        // is 8 (plank). The default pack declares the six chest overrides, so the resolved
+        // indices are 60..65 — the base-only packs in CheckFaceOverrides/CheckTextureVariants
+        // assert the fallback row itself.
+        var chestPack = TexPack.Load("res://texturepacks/default");
+        bool chestResolved = true;
+        for (int f = 0; f < 6; f++)
+            if (TexPack.TileIndex(Block.Chest, f) != TexPack.KeyCount + 48 + f) chestResolved = false;
+        Check(chestResolved,
+            $"resolved default pack: the six chest overrides win at layers {TexPack.KeyCount + 48}..{TexPack.KeyCount + 53} (fallback row is 8)");
+
+        // V4: the vocabulary grows by six face keys; layer space is 66.
+        string[] chestFaceKeys = { "chest_posx", "chest_negx", "chest_top", "chest_bottom", "chest_posz", "chest_negz" };
+        bool faceKeysMatch = TexPack.FaceKeys.Length == 54 && TexPack.LayerCount == 66;
+        for (int f = 0; faceKeysMatch && f < 6; f++) faceKeysMatch = TexPack.FaceKeys[48 + f] == chestFaceKeys[f];
+        Check(faceKeysMatch, $"FaceKeys appends the six chest keys at 48..53 and LayerCount is 66 (len={TexPack.FaceKeys.Length}, layers={TexPack.LayerCount})");
+
+        // V5: the shipped default pack carries the chest art.
+        bool chestArtLoaded = chestPack.FaceOverrides == 6 && chestPack.Layers == 66;
+        for (int f = 0; chestArtLoaded && f < 6; f++)
+            chestArtLoaded = chestPack.Sources[60 + f] == TexPack.TileSource.Png;
+        Check(chestArtLoaded, $"the default pack ships 6/54 chest overrides as Png in class 0 ({chestPack.FaceOverrides} overrides, {chestPack.Layers} layers)");
+
+        // V6: an override really wins over the fallback; {8} here would be the bug.
+        string chestLayers = "";
+        bool overrideWins = true;
+        for (int f = 0; f < 6; f++)
+        {
+            var layers = TexPack.LayersFor(Block.Chest, f);
+            chestLayers += (f == 0 ? "" : ",") + (layers.Length == 1 ? layers[0].ToString() : $"[{layers.Length}]");
+            if (layers.Length != 1 || layers[0] != 60 + f) overrideWins = false;
+        }
+        Check(overrideWins, $"chest_<face> overrides win over the fallback: LayersFor(Chest, f) == 60+f (got {chestLayers})");
+
+        // ---- C1..C7: Chest behaviour -------------------------------------------
+        // C1: the type table entry.
+        Check(Blocks.PolicyOf(Block.Chest) == OrientationPolicy.Upright
+              && Blocks.PlacementOf(Block.Chest) == Placement.Face
+              && Blocks.HardnessOf(Block.Chest) > 0f
+              && Blocks.Palette[^1] == Block.Chest,
+            "C1 Chest is Upright + Face-placement, breakable, and the last Palette entry");
+
+        // C2: the real request pipeline creates the entity.
+        var chestCell = new Vector3I(bx + 81, by, bz);
+        world.RequestEdit(EditRequest.Place(chestCell, Block.Chest, default));
+        Check(world.ApplyPendingEdits() == 1, "C2 a chest place request through the pipeline is applied");
+        bool chestEntity = registry.TryGet(chestCell, out var chest);
+        Check(chestEntity && chest.GetComponent<Interactable>().Kind == InteractKind.Toggle
+              && chest.GetComponent<BlockPos>().Vector == chestCell,
+            "C2 the pipeline created a Chest block entity with BlockPos + Toggle");
+
+        // C3: breaking the chest removes the entity and the emptied bucket.
+        var brokenChest = new Vector3I(bx + 96, by, bz);
+        world.SetBlock(brokenChest.X, brokenChest.Y, brokenChest.Z, Block.Chest);
+        Check(registry.Contains(brokenChest), "C3 a chest in a fresh chunk has an entity");
+        int bucketsBeforeChestBreak = registry.ChunkBucketCount;
+        world.SetBlock(brokenChest.X, brokenChest.Y, brokenChest.Z, Block.Air);
+        Check(!registry.Contains(brokenChest) && registry.ChunkBucketCount == bucketsBeforeChestBreak - 1,
+            "C3 breaking the chest removes its entity and leaves no stale bucket");
+
+        // C4: RMB on a chest interacts and the byte is untouched.
+        BlockInteractions.Reset();
+        int chestVersion = BlockInteractions.Version;
+        Check(PlayerSystems.RightClickAction(world, true, chestCell, true) == ClickAction.Interact,
+            "C4 RMB on a Chest interacts instead of placing");
+        bool chestInteracted = BlockInteractions.Interact(world, chestCell, default);
+        bool chestOpen = registry.TryGet(chestCell, out chest) && chest.GetComponent<ToggleState>().Open;
+        Check(chestInteracted && chestOpen, "C4 chest interaction returns true and flips ToggleState.Open");
+        Check(world.GetBlock(chestCell.X, chestCell.Y, chestCell.Z) == Block.Chest,
+            "C4 chest interaction leaves the block byte untouched");
+        Check(BlockInteractions.Message != null && BlockInteractions.Message.Contains("Chest"),
+            $"C4 the chest HUD message names the block (\"{BlockInteractions.Message}\")");
+        Check(BlockInteractions.Version > chestVersion,
+            $"C4 the chest interaction bumped Version ({chestVersion} -> {BlockInteractions.Version})");
+
+        // C5: the Phase A stand-in is really gone.
+        Check(BlockInteractions.KindOf(Block.Plank) == InteractKind.None && !BlockInteractions.IsInteractable(Block.Plank),
+            "C5 the Plank stand-in is gone: Plank is no longer interactive");
+
+        // C6: non-interactive blocks still cost nothing.
+        int inertCount = registry.Count, inertBuckets = registry.ChunkBucketCount, inertVisited = VisitCount(registry);
+        var inertCell = new Vector3I(bx + 112, by, bz);
+        world.SetBlock(inertCell.X, inertCell.Y, inertCell.Z, Block.Stone);
+        world.SetBlock(inertCell.X, inertCell.Y, inertCell.Z, Block.Dirt);
+        world.SetBlock(inertCell.X, inertCell.Y, inertCell.Z, Block.Air);
+        Check(registry.Count == inertCount && registry.ChunkBucketCount == inertBuckets && VisitCount(registry) == inertVisited,
+            $"C6 Stone/Dirt/Air still create no entity ({registry.Count} entities, {registry.ChunkBucketCount} buckets unchanged)");
+
+        // C7: Chest is always upright and the facing convention maps local +Z to the player.
+        float yaw = 0f, pitch = -Mathf.Pi / 6f; // a known pose: pitch -30 degrees
+        byte chestPlaced = BlockBehaviors.PlaceOrientation(Block.Chest, Regress.Face.Top, yaw, pitch);
+        Check(Blocks.Allows(Block.Chest, chestPlaced) && Orientation.ImageOfLocalAxis(chestPlaced, 1) == Vector3I.Up,
+            "C7 PlaceOrientation(Chest) is allowed and its up image is Up");
+        // C7: the placement convention puts the block's local +Z on the face toward the player.
+        // (The art-side fact — the latch motif is painted on chest_posz, not negz — is asserted
+        //  by the generator's --verify latch check; this assertion is the orientation math.)
+        int cameraFacing = BlockBehaviors.FaceOfNormal(PlayerSystems.CameraBasis(yaw, pitch).Z);
+        Check(Orientation.LocalFace(chestPlaced, cameraFacing) == Regress.Face.PosZ,
+            $"C7 the placement convention maps local +Z onto the player-facing face (local face {Orientation.LocalFace(chestPlaced, cameraFacing)} vs PosZ)");
+        byte nonUpright = Orientation.Axis(Regress.Face.PosX, 0);
+        byte snappedChest = Blocks.Snap(Block.Chest, nonUpright);
+        Check(Orientation.ImageOfLocalAxis(nonUpright, 1) != Vector3I.Up && Blocks.Allows(Block.Chest, snappedChest),
+            $"C7 Snap(Chest, a non-upright candidate) still yields an allowed orientation ({snappedChest})");
     }
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Generate the twelve 16x16 RGBA8 tiles of the bundled default texture pack.
+"""Generate the twelve base 16x16 RGBA8 tiles plus the six chest override tiles of the
+bundled default texture pack.
 
 Python 3 standard library only (zlib/struct/hashlib/os/math/argparse) -- no Pillow, no numpy.
 Output bytes are deterministic: re-running the generator reproduces identical files.
@@ -9,11 +10,13 @@ Output bytes are deterministic: re-running the generator reproduces identical fi
     python tools/gen_default_pack.py --wrap     # 1-pixel wrap (tileability) report
     python tools/gen_default_pack.py --ascii    # text view of every tile
     python tools/gen_default_pack.py --sheet    # contact sheet under .pi/texpack/art/
-    python tools/gen_default_pack.py --imports  # write the twelve Godot .import companions
+    python tools/gen_default_pack.py --imports  # write the Godot .import companions for every tile
 
 Contract: docs/texture-packs.md. Key order == frozen tile indices 0..11:
 stone, dirt, grass_top, grass_side, grass_bottom, sand, wood_side, wood_top, plank, leaves,
 bedrock, missing.
+Chest overrides (Phase B) == vocabulary cells 48..53 -> no-variant baseline layer 60..65:
+chest_posx, chest_negx, chest_top, chest_bottom, chest_posz, chest_negz.
 """
 
 import argparse
@@ -32,6 +35,12 @@ KEY_ORDER = [
     "stone", "dirt", "grass_top", "grass_side", "grass_bottom", "sand",
     "wood_side", "wood_top", "plank", "leaves", "bedrock", "missing",
 ]
+# Phase B chest overrides: vocabulary cells 48..53 -> no-variant baseline layer 60..65.
+# Append-only slots; the base rows above stay frozen.
+OVERRIDE_KEYS = [
+    "chest_posx", "chest_negx", "chest_top", "chest_bottom", "chest_posz", "chest_negz",
+]
+ALL_KEYS = KEY_ORDER + OVERRIDE_KEYS
 SIZE = 16
 # sRGB base colours from the spec table (docs/texture-packs.md "Procedural tiles").
 SRGB = {
@@ -296,6 +305,114 @@ def tile_missing():
     return px
 
 
+# ---------------------------------------------------------------- the six chest overrides
+
+CHEST_LATCH = (219, 179, 102)   # sRGB 0.86/0.70/0.40: the plank hue, brightened
+
+
+def _chest_boards(px, seed):
+    """Four 4px boards with seams and per-board joints: the `plank` grain, reseeded."""
+    b = base("plank")
+    joint = [int(rnd(bd, 3, seed) * SIZE) for bd in range(4)]
+    for y in range(SIZE):
+        bd = y // 4
+        for x in range(SIZE):
+            if y % 4 == 0:
+                f = 0.64
+            else:
+                f = (0.95 + 0.10 * rnd(bd, 5, seed + 1)) * (0.90 + 0.18 * pnoise(x, y, 8, 2, seed + 2 + bd))
+                if x == joint[bd]:
+                    f *= 0.70
+            px[y][x] = mul(b, f) + (255,)
+
+
+def _chest_band(px, seed):
+    """Dark two-row lid seam across the face, lit on its top row."""
+    b = base("wood_side")
+    for y in (6, 7):
+        for x in range(SIZE):
+            f = 0.90 + 0.14 * pnoise(x, y, 8, 2, seed)
+            if y == 6:
+                f *= 1.45
+            px[y][x] = mul(b, f) + (255,)
+
+
+def _chest_frame(px, seed):
+    """One-pixel darker border: the chest's edge boards."""
+    b = base("wood_side")
+    for y in range(SIZE):
+        for x in range(SIZE):
+            if x in (0, SIZE - 1) or y in (0, SIZE - 1):
+                px[y][x] = mul(b, 0.80 + 0.24 * rnd(x, y, seed)) + (255,)
+
+
+def _chest_side(px, seed):
+    """Boards + lid seam + two hinges just under the seam."""
+    _chest_boards(px, seed)
+    _chest_band(px, seed + 1)
+    _chest_frame(px, seed + 2)
+    b = base("wood_side")
+    for x in (3, 4, 11, 12):
+        for y in (5, 6):
+            px[y][x] = mul(b, 0.62 if y == 5 else 1.30) + (255,)
+    return px
+
+
+def tile_chest_posz():
+    """Front (local +Z, player-facing): boards, lid seam, frame, centred latch."""
+    seed, px = 1201, grid()
+    _chest_boards(px, seed)
+    _chest_band(px, seed + 1)
+    _chest_frame(px, seed + 2)
+    b = base("wood_side")
+    for y in range(5, 10):
+        for x in range(6, 10):
+            if y in (5, 9) or x in (6, 9):
+                px[y][x] = mul(b, 0.55) + (255,)                      # latch outline
+            else:
+                px[y][x] = mul(CHEST_LATCH, 0.94 + 0.10 * pnoise(x, y, 4, 4, seed + 3)) + (255,)
+    px[7][7] = px[7][8] = mul(b, 0.40) + (255,)                       # keyhole
+    return px
+
+
+def tile_chest_negz():
+    """Back face: boards, lid seam and edge frame."""
+    seed, px = 1301, grid()
+    _chest_boards(px, seed)
+    _chest_band(px, seed + 1)
+    _chest_frame(px, seed + 2)
+    return px
+
+
+def tile_chest_posx():
+    """Right side: boards, lid seam, frame and two hinge hints."""
+    return _chest_side(grid(), 1401)
+
+
+def tile_chest_negx():
+    """Left side: same side pattern, reseeded so its grain differs."""
+    return _chest_side(grid(), 1501)
+
+
+def tile_chest_top():
+    """Lid: boards, lid seam and edge frame."""
+    seed, px = 1601, grid()
+    _chest_boards(px, seed)
+    _chest_band(px, seed + 1)
+    _chest_frame(px, seed + 2)
+    return px
+
+
+def tile_chest_bottom():
+    """Plain underside: boards only, slightly darkened."""
+    px = grid()
+    _chest_boards(px, 1701)
+    for y in range(SIZE):
+        for x in range(SIZE):
+            px[y][x] = mul(px[y][x][:3], 0.88) + (255,)
+    return px
+
+
 TILES = {
     "stone": tile_stone,
     "dirt": tile_dirt,
@@ -309,6 +426,12 @@ TILES = {
     "leaves": tile_leaves,
     "bedrock": tile_bedrock,
     "missing": tile_missing,
+    "chest_posx": tile_chest_posx,
+    "chest_negx": tile_chest_negx,
+    "chest_top": tile_chest_top,
+    "chest_bottom": tile_chest_bottom,
+    "chest_posz": tile_chest_posz,
+    "chest_negz": tile_chest_negz,
 }
 
 
@@ -379,16 +502,33 @@ def tile_path(key):
 
 def do_generate():
     os.makedirs(TILES_DIR, exist_ok=True)
-    for key in KEY_ORDER:
+    for key in ALL_KEYS:
         n = write_png(tile_path(key), TILES[key]())
         print("wrote texturepacks/default/tiles/%s.png (%d bytes)" % (key, n))
 
 
+def _latch_motif(rows):
+    """Front-latch pixel signature: bright plate pixels at (6,7),(6,8),(8,7),(8,8) around a dark
+    keyhole at (7,7),(7,8). Coordinate bounds, not means: noise cannot satisfy all six cells."""
+    def bright(px):
+        return px[0] >= 195 and px[1] >= 155 and px[2] <= 150
+
+    def dark(px):
+        return px[0] <= 60 and px[1] <= 50 and px[2] <= 40
+
+    return (all(bright(rows[y][x]) for y, x in ((6, 7), (6, 8), (8, 7), (8, 8)))
+            and all(dark(rows[y][x]) for y, x in ((7, 7), (7, 8))))
+
+
 def do_verify():
     ok = True
+    # The latch belongs to the player-facing face only (local +Z == chest_posz).
+    latch_want = {"chest_posz": True, "chest_negz": False, "chest_posx": False,
+                  "chest_negx": False, "chest_top": False, "chest_bottom": False}
+    latch_bad = []
     files = sorted(f for f in os.listdir(TILES_DIR) if f.endswith(".png"))
     print("tiles directory: %d PNG file(s)" % len(files))
-    for key in KEY_ORDER:
+    for key in ALL_KEYS:
         path = tile_path(key)
         if not os.path.isfile(path):
             print("%-12s MISSING" % key)
@@ -416,7 +556,15 @@ def do_verify():
         print("%-12s %dx%d depth=%d ctype=%d interlace=%d %s %s"
               % (key, img["w"], img["h"], img["depth"], img["ctype"], img["interlace"],
                  "ok " if good else "BAD", " ".join(notes)))
+        if key in latch_want and _latch_motif(img["rows"]) != latch_want[key]:
+            latch_bad.append("%s %s" % (key[len("chest_"):],
+                                        "missing" if latch_want[key] else "present"))
         ok &= good
+    if latch_bad:
+        print("FAIL chest latch motif: " + " / ".join(latch_bad))
+        ok = False
+    else:
+        print("chest latch motif: ok (chest_posz present, other five absent)")
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -430,7 +578,7 @@ def do_wrap():
     print("col ref / row ref are in-tile neighbours (col7|col8, row7|row8) -- the noise's own step size")
     print("%-12s %7s %8s %7s %7s %8s %7s"
           % ("tile", "col max", "col mean", "row max", "row mean", "col ref", "row ref"))
-    for key in KEY_ORDER:
+    for key in ALL_KEYS:
         img = read_png(tile_path(key))
         rows = img["rows"]
         col = [_delta(rows[y][0], rows[y][SIZE - 1]) for y in range(SIZE)]
@@ -463,7 +611,7 @@ def hue_class(rgb):
 
 
 def do_ascii():
-    for key in KEY_ORDER:
+    for key in ALL_KEYS:
         img = read_png(tile_path(key))
         rows = img["rows"]
         print("%s:" % key)
@@ -506,7 +654,7 @@ def _blit_digit(rows, ox, oy, digit, scale, colour):
 
 def do_sheet(cols=4, cell=128):
     """Contact sheet: tile 0..11 in row-major order, each tile repeated 2x2 magnified 4x."""
-    keys = KEY_ORDER
+    keys = ALL_KEYS
     rows_n = (len(keys) + cols - 1) // cols
     flat = [[(0, 0, 0, 255)] * (cols * cell) for _ in range(rows_n * cell)]
     for i, key in enumerate(keys):
@@ -563,7 +711,7 @@ detect_3d/compress_to=0
 
 def do_imports():
     """Mirror Godot 4.7.2's generated default, without uid, pinned to lossless."""
-    for key in KEY_ORDER:
+    for key in ALL_KEYS:
         name = key + ".png"
         res = "res://texturepacks/default/tiles/" + name
         dest = "res://.godot/imported/%s-%s.ctex" % (

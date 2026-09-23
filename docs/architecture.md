@@ -88,14 +88,15 @@ Two component details are deliberate deviations from "keep components blittable"
 
 The chunk byte array stays authoritative for terrain and rendering. An interactive block is a
 position-keyed entity carrying `BlockPos` + `Interactable` + a per-kind state component
-(`ToggleState` for `Plank`); instance state never enters the 4096-byte arrays. Lookup is two
+(`ToggleState` for `Chest`); instance state never enters the 4096-byte arrays. Lookup is two
 dictionary probes — chunk bucket, then cell — never a scan. `VoxelWorld.SetBlock` is the ONE choke
 point that reconciles the two sides, so they cannot disagree, and `BlockEntityRegistry.Audit`
 checks both directions. RMB ordering is decided by the pure `PlayerSystems.RightClickAction`
 (Interact > Place) and used by `RequestPlaceAtCrosshair`, whose placement rules are otherwise
 unchanged. No new system was needed — the sync lives in `SetBlock` and dispatch in the existing
-build step — so the system counts in this document do not move. Phase A carries the mechanism on
-`Block.Plank`; `Block.Chest` is Phase B.
+build step — so the system counts in this document do not move. The interactive block is
+`Block.Chest` (`Placement.Face` + `OrientationPolicy.Upright`, HUD `Chest: open`); `Plank` is no
+longer interactive.
 
 ## Systems: four chunk systems, five player systems, three mob systems
 

@@ -227,7 +227,7 @@ public static class PlayerSystems
         var ordered = new byte[canonical.Length];
         for (int i = 0; i < canonical.Length; i++) ordered[i] = canonical[(start + i) % canonical.Length];
 
-        var order = new byte[9][];
+        var order = new byte[System.Enum.GetValues<Block>().Length][];
         for (int i = 0; i < order.Length; i++)
         {
             var block = (Block)i;

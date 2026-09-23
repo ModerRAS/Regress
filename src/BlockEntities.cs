@@ -36,8 +36,7 @@ public struct ToggleState : IComponent
 /// <summary>Block type -> interaction kind. One comparison, nobody allocates.</summary>
 public static class BlockInteractions
 {
-    // Phase A: Plank stands in for the chest. Phase B adds Block.Chest and deletes this row.
-    public static InteractKind KindOf(Block b) => b == Block.Plank ? InteractKind.Toggle : InteractKind.None;
+    public static InteractKind KindOf(Block b) => b == Block.Chest ? InteractKind.Toggle : InteractKind.None;
 
     public static bool IsInteractable(Block b) => KindOf(b) != InteractKind.None;
 

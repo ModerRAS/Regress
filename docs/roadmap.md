@@ -11,7 +11,7 @@
 - **Block edits as a request pipeline** — hardness-based mining duration, tree felling via
   `BlockBehaviors`, placement legality in one place.
 - **ECS** — chunk lifecycle expressed as archetypes; see [architecture.md](architecture.md).
-- **Test harness** — `--selftest` (248 assertions), `--demo` (scripted walk / build / mine),
+- **Test harness** — `--selftest` (270 assertions), `--demo` (scripted walk / build / mine),
   `--bench` (five-phase performance run with per-system breakdown), `--shot`, `--map`,
   `--freecam`, `--frozen`, `--diag`.
 - **Texture packs v1** — `pack.json` + twelve keyed tiles, four-rung discovery ending in
@@ -19,7 +19,7 @@
 - **Mobs** — up to 48 deterministic wanderers. The AI is a pure, engine-free function over
   `IBlockReader` (`MobAiRules.Decide`), movement is gravity + AABB instead of `CharacterBody3D`,
   spawn/despawn follow a seeded square ring around `Focus`.
-- **Interactive blocks as entities** — a placed interactive block is a position-keyed ECS entity (`BlockPos` + `Interactable` + per-kind state) found through an O(1) chunk-bucketed registry; the 4096-byte chunk array stays authoritative for terrain and render, `VoxelWorld.SetBlock` is the single sync point, and RMB on an interactive target interacts instead of placing. Phase A proves the mechanism on `Plank` (toggle + a HUD line); `Block.Chest` and its art are Phase B. See [architecture.md](architecture.md).
+- **Interactive blocks as entities** — a placed interactive block is a position-keyed ECS entity (`BlockPos` + `Interactable` + per-kind state) found through an O(1) chunk-bucketed registry; the 4096-byte chunk array stays authoritative for terrain and render, `VoxelWorld.SetBlock` is the single sync point, and RMB on an interactive target interacts instead of placing. `Block.Chest` is delivered (toggle + a HUD line); the append-only vocabulary extension process is documented in [texture-packs.md](texture-packs.md). See [architecture.md](architecture.md).
 
 ## Open work
 

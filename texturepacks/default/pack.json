@@ -14,6 +14,12 @@
     "plank": "tiles/plank.png",
     "leaves": "tiles/leaves.png",
     "bedrock": "tiles/bedrock.png",
-    "missing": "tiles/missing.png"
+    "missing": "tiles/missing.png",
+    "chest_posx": "tiles/chest_posx.png",
+    "chest_negx": "tiles/chest_negx.png",
+    "chest_top": "tiles/chest_top.png",
+    "chest_bottom": "tiles/chest_bottom.png",
+    "chest_posz": "tiles/chest_posz.png",
+    "chest_negz": "tiles/chest_negz.png"
   }
 }

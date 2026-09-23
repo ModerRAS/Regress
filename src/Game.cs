@@ -144,13 +144,14 @@ public partial class Game : Node3D
                 case 246:
                     // Creative so the scripted run is not gated on mining time.
                     state.Creative = true;
-                    state.Selected = Block.Plank;
+                    state.Selected = Block.Chest;
                     // Standing right against a step means the obvious target is inside the
                     // player's own box, which is correctly refused. Sweep for a legal one.
                     for (int step = 0; step < 8 && _placedCell == null; step++)
                     {
                         state.Yaw = step * Mathf.Pi * 0.25f;
                         state.Pitch = Mathf.DegToRad(-30f);
+                        PlayerSystems.UpdatePending(ref state, ref intent, null);
                         _placedCell = PlayerSystems.RequestPlaceAtCrosshair(World, Player.Self);
                     }
                     break;
@@ -161,9 +162,9 @@ public partial class Game : Node3D
                     bool toggleOpen = _placedCell.HasValue
                         && World.BlockEntities.TryGet(_placedCell.Value, out var blockEntity)
                         && blockEntity.GetComponent<ToggleState>().Open;
-                    bool stillPlank = _placedCell.HasValue
-                        && World.GetBlock(_placedCell.Value.X, _placedCell.Value.Y, _placedCell.Value.Z) == Block.Plank;
-                    GD.Print(interactOk && stillPlank && toggleOpen ? "interact: PASS (Plank: open)" : "interact: FAIL");
+                    bool stillChest = _placedCell.HasValue
+                        && World.GetBlock(_placedCell.Value.X, _placedCell.Value.Y, _placedCell.Value.Z) == Block.Chest;
+                    GD.Print(interactOk && stillChest && toggleOpen ? "interact: PASS (Chest: open)" : "interact: FAIL");
                     RefreshHud();
                     break;
 
@@ -238,7 +239,7 @@ public partial class Game : Node3D
     private void ReportBuild()
     {
         bool ok = _placedCell.HasValue
-            && World.GetBlock(_placedCell.Value.X, _placedCell.Value.Y, _placedCell.Value.Z) == Block.Plank;
+            && World.GetBlock(_placedCell.Value.X, _placedCell.Value.Y, _placedCell.Value.Z) == Block.Chest;
         GD.Print($"build: requested {_placedCell?.ToString() ?? "nothing"} -> {(ok ? "PASS" : "FAIL")}");
     }
 
@@ -246,7 +247,7 @@ public partial class Game : Node3D
     {
         if (_hud == null || Player == null) return;
         _hud.Text = $"Regress (16^3 chunks, unbounded Y) — WASD move, Space jump, Shift sprint, F fly, LMB break, RMB place\n"
-            + $"1-7 select block: {Blocks.NameOf(Player.Selected)}   R respawn   Esc release mouse"
+            + $"1-8 select block: {Blocks.NameOf(Player.Selected)}   R respawn   Esc release mouse"
             + (BlockInteractions.Message == null ? "" : $"\nRMB use: {BlockInteractions.Message}");
     }
 
