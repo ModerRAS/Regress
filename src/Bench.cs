@@ -101,7 +101,7 @@ public partial class Bench : Node
         foreach (var v in now) systems += v;
         GD.Print($"          per frame: plan={now[0]:F2} gen={now[1]:F2} "
             + $"meshQuery={now[2]:F2} meshWork={now[3]:F2} colQuery={now[4]:F2} colWork={now[5]:F2} "
-            + $"| poll={now[6]:F2} look={now[7]:F2} edit={now[8]:F2} move={now[9]:F2} "
+            + $"| poll={now[6]:F2} look={now[7]:F2} edit={now[8]:F2} move={now[9]:F2} mobs={now[11]:F2} "
             + $"=> systems={systems:F2}ms engine={avg - systems:F2}ms");
 
         _snapshot = Prof.Snapshot();

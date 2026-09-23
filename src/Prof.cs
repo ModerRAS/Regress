@@ -9,17 +9,17 @@ namespace Regress;
 /// </summary>
 public static class Prof
 {
-    public static double Plan, Gen, MeshQuery, MeshWork, ColQuery, ColWork, Poll, Look, Edit, EditApply, Move;
+    public static double Plan, Gen, MeshQuery, MeshWork, ColQuery, ColWork, Poll, Look, Edit, EditApply, Move, Mobs;
     public static int Frames;
 
     public static double Since(ulong startTicks) => (Time.GetTicksUsec() - startTicks) / 1000.0;
 
     public static double[] Snapshot() =>
-        new[] { Plan, Gen, MeshQuery, MeshWork, ColQuery, ColWork, Poll, Look, Edit, EditApply, Move };
+        new[] { Plan, Gen, MeshQuery, MeshWork, ColQuery, ColWork, Poll, Look, Edit, EditApply, Move, Mobs };
 
     public static void Reset()
     {
-        Plan = Gen = MeshQuery = MeshWork = ColQuery = ColWork = Poll = Look = Edit = EditApply = Move = 0;
+        Plan = Gen = MeshQuery = MeshWork = ColQuery = ColWork = Poll = Look = Edit = EditApply = Move = Mobs = 0;
         Frames = 0;
     }
 }

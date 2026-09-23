@@ -11,7 +11,7 @@ namespace Regress;
 /// Systems query those archetypes and are budgeted in milliseconds so no frame can spin
 /// on an arbitrary number of variable-cost chunks.
 /// </summary>
-public partial class VoxelWorld : Node3D
+public partial class VoxelWorld : Node3D, IBlockReader
 {
     public const int ChunkSize = 16;
 
@@ -30,6 +30,11 @@ public partial class VoxelWorld : Node3D
     public int ChunkWorkBudgetMs = 3;
     public int ChunksPerFrame = 4;
     public Vector3 Focus;
+
+    // Mob spawn plan cursor for the current focus cell; MobSpawner.Plan itself is pure.
+    internal int MobCursor;
+    internal int MobFocusX = int.MinValue;
+    internal int MobFocusZ = int.MinValue;
 
     // Timings for --bench.
     public double GenMsTotal { get; private set; }
@@ -88,6 +93,9 @@ public partial class VoxelWorld : Node3D
     /// <summary>Chunk coordinate -> entity. ECS has no spatial index, so the world keeps one.</summary>
     private readonly Dictionary<Vector3I, Entity> _index = new();
 
+    /// <summary>Interactive blocks: cell -> entity. The byte arrays stay authoritative; this index keeps the entity side in step with them.</summary>
+    public BlockEntityRegistry BlockEntities { get; } = new();
+
     /// <summary>Per chunk-column surface range, computed once (~256 noise samples).</summary>
     private readonly Dictionary<Vector2I, (int Min, int Max)> _columns = new();
 
@@ -140,6 +148,10 @@ public partial class VoxelWorld : Node3D
         double colTotal = Prof.Since(t2);
         Prof.ColQuery += colTotal - _colWorkMs;
         Prof.ColWork += _colWorkMs;
+
+        Prof.Mobs += MobSystems.Spawn(this)
+            + MobSystems.Tick(this, (float)delta)
+            + MobSystems.SyncVisuals(Store);
     }
 
     // ---- system 1: streaming --------------------------------------------
@@ -207,6 +219,7 @@ public partial class VoxelWorld : Node3D
             ref var visual = ref entity.GetComponent<ChunkVisual>();
             visual.Mesh?.QueueFree();
             visual.Body?.QueueFree();
+            BlockEntities.DropChunk(Store, coord.Vector); // unloading takes its block entities with it
             entity.DeleteEntity();
         }
     }
@@ -533,10 +546,13 @@ public partial class VoxelWorld : Node3D
 
         ref var data = ref entity.GetComponent<ChunkBlocks>();
         int index = ChunkBlocks.Index(x - key.X * ChunkSize, y - key.Y * ChunkSize, z - key.Z * ChunkSize);
+        // ponytail: same block + same orientation is a true no-op (nothing to sync either).
         if (data.Value[index] == (byte)block && data.Orientation[index] == orientation) return false;
 
         data.Value[index] = (byte)block;
         data.Orientation[index] = orientation;
+        // The one choke point where a cell byte changes, so byte and entity cannot drift.
+        BlockEntities.Sync(Store, new Vector3I(x, y, z), block);
         entity.AddTag<KeepAlive>(); // player edits are never auto-unloaded
         MarkDirty(key);
 

@@ -6,7 +6,8 @@ A Minecraft-like voxel sandbox in C# on **Godot 4.7 (.NET)**, architected as an 
 ([Friflo.Engine.ECS](https://github.com/friflo/Friflo.Engine.ECS)).
 
 Chunks are **16 × 16 × 16 cubes** with **no vertical limit** — build up or dig down forever.
-Terrain spans negative Y, with a bedrock floor and a heightmap surface.
+Terrain spans negative Y, with a bedrock floor and a heightmap surface. Slime mobs wander the
+surface: seeded AI, lightweight AABB movement, no physics bodies.
 
 ![preview](preview.png)
 
@@ -20,7 +21,7 @@ Terrain spans negative Y, with a bedrock floor and a heightmap surface.
 ```bash
 dotnet build                                   # build the C# assembly
 godot-mono --path .                            # play
-godot-mono --headless --path . -- --selftest   # 182 headless assertions
+godot-mono --headless --path . -- --selftest   # 242 headless assertions
 godot-mono --path . -- --demo                  # scripted walk + build + mine-down test
 godot-mono --path . -- --bench                 # performance run with per-system breakdown
 godot-mono --path . -- --shot=out.png          # render one frame to a PNG and quit
@@ -70,6 +71,10 @@ src/voxel_tiles.gdshader spatial shader: tile array + vertex tint, alpha cutout
 src/Blocks.cs            block palette, per-face colours, break times
 src/EditRequests.cs      edit requests + block behaviours (what a break actually removes)
 src/TerrainGenerator.cs  noise heightmap, per-column surface range, trees (one per world)
+src/MobComponents.cs     mob components and the Mob entity tag
+src/MobAi.cs             pure mob decision rules over IBlockReader (no Godot types)
+src/MobSpawner.cs        deterministic spawn plan + mob entity factory, cap and despawn
+src/MobSystems.cs        mob spawn / tick (gravity + AABB) / visual sync systems
 src/VoxelWorld.cs        ECS store + streaming / mesh / collision systems + block access
 src/PlayerSystems.cs     player components and the input / look / move / mine / build systems
 src/Player.cs            Godot side of the player: body, camera, input callbacks
@@ -82,7 +87,7 @@ docs/                    architecture, performance, roadmap, texture-packs
 
 ## Design in one screen
 
-**Entities** are chunks (~230 resident) and the player. A chunk's **archetype is its lifecycle
+**Entities** are chunks (~230 resident), the player and up to 48 mobs. A chunk's **archetype is its lifecycle
 state**, so "what work is pending" is a memory-layout fact instead of a flag to check:
 
 ```
@@ -103,6 +108,11 @@ budget, apply structural changes after collecting:
 them, and `BlockBehaviors` decides that one break is not one block (felling a tree takes the
 trunk and its canopy). Break time comes from `Blocks.HardnessOf`.
 
+**Mobs** are the third entity kind: `MobSpawner` builds entities on a deterministic ring around
+the focus (hash-seeded, cap 48), `MobAiRules.Decide` is a pure function of `IBlockReader` and an
+xorshift32 RNG, and gravity + AABB resolution moves them without physics bodies — `--bench`
+shows `mobs=0.13 ms` at the cap with `physics step` unchanged.
+
 The deeper reasoning — what is decoupled and what deliberately is not, the tag-versus-field rule,
 and the known weaknesses — is in **[docs/architecture.md](docs/architecture.md)**.
 
@@ -117,7 +127,8 @@ and the known weaknesses — is in **[docs/architecture.md](docs/architecture.md
 
 ## Performance in one paragraph
 
-Steady state costs **0.03 ms/frame** in game systems; almost all of the ~1.4 ms frame is Godot's
+Steady state costs **0.03 ms/frame** in game systems, and the mob systems add 0.13 ms/frame with
+the 48-mob cap (bench steady `systems` 0.22 → 0.27 ms); almost all of the ~1.4 ms frame is Godot's
 main loop and buffer present, which `--bench --frozen` demonstrates by running the same frame
 with no game code at all. That floor drifts ±30% with GPU thermal state, so frame times are only
 comparable within one session. The real cost is chunk streaming (0.61 ms mesh + 0.32 ms collision
@@ -128,7 +139,7 @@ per chunk), bounded by time budgets rather than chunk counts. Details and number
 
 | flag | what it does |
 | --- | --- |
-| `--selftest` | 182 headless assertions: terrain, mesher cross-checked against brute force, triangle winding, vertical-world invariants, break/place request pipeline, tree felling, per-world terrain, placement preview (ghost, rotate keys, sticky memory), texture variants (frozen layout, FNV-1a selection, cap, degradation) |
+| `--selftest` | 242 headless assertions: terrain, mesher cross-checked against brute force, triangle winding, vertical-world invariants, break/place request pipeline, tree felling, per-world terrain, placement preview (ghost, rotate keys, sticky memory), mob spawn plan / movement / pure AI, texture variants (frozen layout, FNV-1a selection, cap, degradation) |
 | `--demo` | drives the player without a keyboard: walk, place, then mine straight down 63 blocks to bedrock, asserting they stay on solid ground |
 | `--bench` | five-phase performance run; `--frozen` measures the engine floor, `--view=` / `--collision=` / `--budget=` sweep |
 | `--shot=path.png` | render N frames, save a PNG, quit |

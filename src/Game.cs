@@ -11,16 +11,19 @@ public partial class Game : Node3D
 
     private Label _hud;
     private string _shotPath;
+    private int _shotFrame = 90;
     private int _frames;
     private bool _selfTest;
     private Vector3 _walkStart;
     private float _digStartY;
     private Vector3I? _placedCell;
+    private int _interactVersion;
 
     public override void _Ready()
     {
         _selfTest = HasArg("--selftest");
         _shotPath = ArgValue("--shot=");
+        if (int.TryParse(ArgValue("--shot-frame="), out int shotFrame)) _shotFrame = shotFrame;
         VoxelWorld.UseTiles(TexPack.Load(ArgValue("--pack=")).Array);
 
         World = new VoxelWorld { Name = "World", Focus = new Vector3(0.5f, 0, 0.5f) };
@@ -110,6 +113,11 @@ public partial class Game : Node3D
             PlayerSystems.Build(World.Store, World);
             Prof.Edit += Prof.Since(p2);
             World.Focus = Player.GlobalPosition;
+            if (_hud != null && _interactVersion != BlockInteractions.Version)
+            {
+                _interactVersion = BlockInteractions.Version;
+                RefreshHud();
+            }
         }
 
         if (HasArg("--frozen")) return; // measure the engine floor: no game code at all
@@ -147,6 +155,18 @@ public partial class Game : Node3D
                     }
                     break;
 
+                case 248:
+                    bool interactOk = _placedCell.HasValue
+                        && BlockInteractions.Interact(World, _placedCell.Value, Player.Self);
+                    bool toggleOpen = _placedCell.HasValue
+                        && World.BlockEntities.TryGet(_placedCell.Value, out var blockEntity)
+                        && blockEntity.GetComponent<ToggleState>().Open;
+                    bool stillPlank = _placedCell.HasValue
+                        && World.GetBlock(_placedCell.Value.X, _placedCell.Value.Y, _placedCell.Value.Z) == Block.Plank;
+                    GD.Print(interactOk && stillPlank && toggleOpen ? "interact: PASS (Plank: open)" : "interact: FAIL");
+                    RefreshHud();
+                    break;
+
                 case 252:
                     ReportBuild();
                     // Straight down: through the surface chunk into buried chunks that have
@@ -167,7 +187,8 @@ public partial class Game : Node3D
             }
         }
 
-        if (_shotPath == null || _frames < 90) return; // let streaming + meshing settle
+        // 90 frames let streaming/meshing settle; --shot-frame=N captures later states (e.g. the demo interaction HUD line).
+        if (_shotPath == null || _frames < _shotFrame) return;
 
         var image = GetViewport().GetTexture().GetImage();
         var error = image.SavePng(_shotPath);
@@ -225,7 +246,8 @@ public partial class Game : Node3D
     {
         if (_hud == null || Player == null) return;
         _hud.Text = $"Regress (16^3 chunks, unbounded Y) — WASD move, Space jump, Shift sprint, F fly, LMB break, RMB place\n"
-            + $"1-7 select block: {Blocks.NameOf(Player.Selected)}   R respawn   Esc release mouse";
+            + $"1-7 select block: {Blocks.NameOf(Player.Selected)}   R respawn   Esc release mouse"
+            + (BlockInteractions.Message == null ? "" : $"\nRMB use: {BlockInteractions.Message}");
     }
 
     private void AddHud()

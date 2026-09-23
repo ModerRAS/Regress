@@ -73,6 +73,10 @@ public struct PlayerMining : IComponent
     public bool Active;
 }
 
+/// <summary>What a right click does at the crosshair. Interaction wins over building: a usable
+/// block entity handles the click instead of a block being placed next to it.</summary>
+public enum ClickAction : byte { None, Interact, Place }
+
 /// <summary>
 /// Player systems. They work on component data rather than on the scene graph, so the ray
 /// used for digging comes from the yaw/pitch components instead of from a camera transform
@@ -390,16 +394,33 @@ public static class PlayerSystems
         return cell;
     }
 
+    /// <summary>Pure precedence: interaction beats building. Testable without a physics raycast.</summary>
+    public static ClickAction RightClickAction(VoxelWorld world, bool hasTarget, Vector3I targetCell, bool hasPlacement)
+        => hasTarget && world.BlockEntities.Contains(targetCell) ? ClickAction.Interact
+            : hasPlacement ? ClickAction.Place : ClickAction.None;
+
     /// <summary>The one place that decides whether a placement is legal, so the interactive
-    /// path and the scripted path cannot drift apart.</summary>
+    /// path and the scripted path cannot drift apart. Interaction now takes precedence: a
+    /// usable block entity at the crosshair handles the click instead of a block being
+    /// placed next to it.</summary>
     public static Vector3I? RequestPlaceAtCrosshair(VoxelWorld world, Entity player)
     {
         ref var state = ref player.GetComponent<PlayerState>();
         ref var body = ref player.GetComponent<PlayerBody>();
-        if (!PlaceTarget(world, body.Node, state.Yaw, state.Pitch, out var cell, out _)) return null;
-        if (PlacementRefused(world, body.Node, cell)) return null; // never inside the player
-        PlaceAt(world, player, cell);
-        return cell;
+        bool hasTarget = CrosshairBlock(world, body.Node, state.Yaw, state.Pitch, out var target);
+        bool hasPlacement = PlaceTarget(world, body.Node, state.Yaw, state.Pitch, out var cell, out _)
+            && !PlacementRefused(world, body.Node, cell); // never inside the player
+        switch (RightClickAction(world, hasTarget, target, hasPlacement))
+        {
+            case ClickAction.Interact:
+                BlockInteractions.Interact(world, target, player);
+                return target;
+            case ClickAction.Place:
+                PlaceAt(world, player, cell);
+                return cell;
+            default:
+                return null;
+        }
     }
 
     /// <summary>True if something solid is directly in front of the player. Used to tell
