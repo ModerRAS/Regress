@@ -90,9 +90,12 @@ preset keys are registered in `editor/export/editor_export_platform_apple_embedd
 
 Placeholder: `preset.4` uses
 `icons/icon_1024x1024="res://texturepacks/default/tiles/grass_top.png"` (a 16×16 game tile)
-with `application/icon_interpolation=0` (Nearest neighbor) so the pixel art stays sharp when
-scaled to 1024. This is **not a real icon**; before a public release it must be replaced with a
-proper 1024×1024 icon. `_dark`/`_tinted` stay empty (the source above skips them).
+with `application/icon_interpolation=0` (Nearest neighbor) to keep the pixel-art look when scaled
+to 1024. `application/icon_interpolation` is a registered preset key, not a project setting
+(`editor/export/editor_export_platform_apple_embedded.cpp` @ `4.7.2-stable` line 282 registers
+the enum with default 4; it is read at lines 294, 300 and 318), so it stays in `preset.4`. This
+is **not a real icon**; before a public release it must be replaced with a proper 1024×1024
+icon. `_dark`/`_tinted` stay empty (the source above skips them).
 
 ## macOS editor bundle name (measured in CI)
 
@@ -196,8 +199,9 @@ Artifacts (bundle `Regress-desktop-android`): `Regress-linux-x86_64.zip`,
 `Regress-windows-x86_64.zip`, `Regress-android.apk`.
 
 Android launcher icon: `preset.3` has no `launcher_icons/*` keys and the export still succeeds,
-so the APK carries the engine's default launcher icon. That is an appearance gap, not a blocker;
-brand launcher icons can be added later as a separate decision.
+so the APK carries the engine's default launcher icon. This is an appearance gap and a pending
+user decision (engine default vs. a brand icon), not a blocker; it is tracked in
+[roadmap.md](roadmap.md).
 
 ### `apple` (macos-latest)
 
