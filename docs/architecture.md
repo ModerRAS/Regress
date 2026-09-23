@@ -304,6 +304,15 @@ still one request.
 | `ChunkWorkBudgetMs` / `MobWorkBudgetMs` | 3 / 1.0 ms | 3 / 1.0 ms | **not scaled**: time |
 | `RetargetSeconds`, `TargetAttempts`, `Epsilon`, `SelectedPerEight`, max mobs, per-frame counts, hash shifts, 24 orientations, ±0.5 crosshair | — | — | **not scaled**: times and counts |
 
+The 4x4x8 body cannot descend a 1-wide shaft. At the shaft wall (r = 0.5 from the body axis) the
+capsule's bottom sits `2 - sqrt(4 - 0.25) = 0.0635` above the feet, so a 1-wide hole lets the body
+sink at most 0.064 blocks; sinking one block needs a shaft about 3.46 wide. A shaft exactly as wide
+as the body (4) is not enough either: its walls sit at r = 2.0 = the capsule radius,
+`2 - sqrt(4 - 4) = 2`, and the body wedges after about two blocks (measured in `--demo`: 40 layers
+excavated at 4x4, sank -0.6). "Dig one column straight down" therefore no longer lowers the player
+at the ×4 body size: a ×4 consequence, not a bug. The `--demo` dig-down gate digs a 5x5 shaft
+(25 cells per layer, walls at r = 2.5) for this reason.
+
 Block hardness was scaled ×0.25 — the inverse of the linear scale — so a hand mines the same
 *physical* depth per second: Stone 0.375 s, Dirt 0.125, Grass 0.15, Sand 0.125, Wood 0.5,
 Plank 0.5, Leaves 0.05, Chest 0.5, Pumpkin 0.25; Air and Bedrock are unbreakable (−1). Leaves at
