@@ -93,6 +93,7 @@ Carried from [architecture.md](architecture.md#known-weaknesses):
 - The mesher allocates ~430 KB per chunk; a two-pass count-then-fill mesh would remove it.
 - No persistence: player-built chunks are pinned in memory rather than written to disk, so the
   world resets between sessions.
+- **App icon**: iOS currently uses a placeholder game tile and Android keeps the engine default launcher icon. Both need a real 1024×1024 icon from the user before release.
 
 ## Optional / user decides
 
