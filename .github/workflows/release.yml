@@ -34,10 +34,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET 8
+      - name: Setup .NET 9
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 9.0.x
           cache: true
           cache-dependency-path: Regress.csproj
 
@@ -219,19 +219,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET 8
+      - name: Setup .NET 9
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 9.0.x
           cache: true
           cache-dependency-path: Regress.csproj
 
       - name: Report .NET SDK
-        # Godot 4.7's iOS export docs do not require `dotnet workload install ios`:
-        # the .NET export plugin publishes the plain net8.0 project with a Mono runtime
-        # RID, and no Godot doc page mentions a workload for iOS export. This step is the
-        # record of what CI actually had. If `dotnet publish -r ios-arm64` fails with
-        # NETSDK1147, add `dotnet workload install ios` here.
+        # Godot 4.7.2's mono templates require the project to target net9.0 (Android
+        # export_plugin.cpp:2944-2951 validates the TFM for non-gradle exports), so the
+        # project now targets net9.0 and the SDK here is 9.0.x. No `dotnet workload
+        # install ios` is documented as required; this print is the record of what CI
+        # had. If `dotnet publish -r ios-arm64` fails with NETSDK1147, add the workload.
         run: |
           dotnet --info
           dotnet workload list
@@ -256,7 +256,8 @@ jobs:
             URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_STATUS}/Godot_v${GODOT_VERSION}-${GODOT_STATUS}_mono_macos.universal.zip"
             curl -fL --retry 3 -o /tmp/godot.zip "$URL"
             unzip -q -o /tmp/godot.zip -d "$HOME/godot"
-            BIN=$(find "$HOME/godot" -maxdepth 5 -type f -path '*/Godot.app/Contents/MacOS/Godot' -print -quit)
+            ls -R "$HOME/godot" | head -40 || true
+            BIN=$(find "$HOME/godot" -maxdepth 5 -type f -path '*/Contents/MacOS/Godot' -print -quit)
             test -n "$BIN"
             chmod +x "$BIN"
             ln -sf "$BIN" "$HOME/godot/godot"
