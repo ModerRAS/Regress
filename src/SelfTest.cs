@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using Friflo.Engine.ECS;
 using Godot;
@@ -196,12 +197,17 @@ public static class SelfTest
         Check(world.GetBlock(placed.X, placed.Y, placed.Z) == Block.Wood, "read back at negative x/y/z");
         Check(world.SetBlock(placed.X, placed.Y, placed.Z, Block.Air), "clear negative-coord block");
 
+        // ---- block orientation -------------------------------------------
+        CheckOrientation(world);
+        CheckOrientationByteDomain();
+
         // ---- texture pack + mesher texture attributes ---------------------
         CheckTileIndexMap();
         CheckFaceOverrides();
         CheckResolveTilePath();
         CheckPackLoading();
         CheckMesherTextureArrays(world);
+        CheckMesherOrientation(world);
 
         return _failures;
     }
@@ -267,6 +273,516 @@ public static class SelfTest
             }
         }
         return faces * 6;
+    }
+
+    // ---- block orientation ------------------------------------------------
+
+    /// <summary>4 corners per face, copied from ChunkMesher.FaceCorners: (x, y, z) triples.</summary>
+    private static readonly int[][] FaceCorners =
+    {
+        new[] { 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 1, 1 }, // +X
+        new[] { 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0 }, // -X
+        new[] { 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0 }, // +Y
+        new[] { 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1 }, // -Y
+        new[] { 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1 }, // +Z
+        new[] { 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0 }, // -Z
+    };
+
+    private static readonly Vector3I[] FaceDirs =
+    {
+        new(1, 0, 0), new(-1, 0, 0), new(0, 1, 0), new(0, -1, 0), new(0, 0, 1), new(0, 0, -1),
+    };
+
+    private static float YawAt(int step) => -Mathf.Pi + step * (2f * Mathf.Pi / 16f);
+    private static float PitchAt(int step) => -Mathf.Pi * 0.5f + step * (Mathf.Pi / 8f);
+
+    /// <summary>Per-voxel rotation: storage, the 24-rotation group, the placement rules and the
+    /// per-type orientation policy. Every check here can fail.</summary>
+    private static void CheckOrientation(VoxelWorld world)
+    {
+        GD.Print("  ---- block orientation ----");
+
+        // -- the type tables -------------------------------------------------
+        int aliasWrong = 0, anyBlocks = 0, aliasUnmirrored = 0;
+        int grassSize = 0, grassUpright = 0;
+        for (int b = 1; b <= (int)Block.Bedrock; b++)
+        {
+            var block = (Block)b;
+            if (Blocks.Allows(block, Orientation.IdentityDuplicate) != Blocks.Allows(block, Orientation.None)) aliasWrong++;
+            if ((Blocks.OrientationMask(block) & (1u << Orientation.IdentityDuplicate)) != 0
+                && (Blocks.OrientationMask(block) & 1u) == 0) aliasUnmirrored++;
+            int size = AllowedCount(block);
+            if (block == Block.Grass)
+            {
+                grassSize = size;
+                for (int value = 0; value <= Orientation.Count; value++)
+                    if (value != Orientation.IdentityDuplicate && Blocks.Allows(block, (byte)value)
+                        && Orientation.ImageOfLocalAxis((byte)value, 1) == Vector3I.Up) grassUpright++;
+            }
+            else if (Blocks.PolicyOf(block) == OrientationPolicy.Any && size == Orientation.Count) anyBlocks++;
+        }
+        Check(grassSize == 4 && grassUpright == 4 && Blocks.PolicyOf(Block.Grass) == OrientationPolicy.Upright,
+            $"Grass allows exactly 4 upright orientations ({grassSize} allowed, {grassUpright} upright)");
+        Check(anyBlocks == 7, $"{anyBlocks}/7 other blocks are Any(24)");
+        Check(aliasWrong == 0, "8/8 blocks answer Allows identically for the identity's two bytes");
+        Check(aliasUnmirrored == 0, "the semantic mask always mirrors byte 9 from byte 0");
+        Check(Blocks.OrientationMask(Block.Stone) == (1u << (Orientation.Count + 1)) - 1u,
+            "Any's semantic mask is all 25 bytes");
+
+        // -- policy totality and snapping ------------------------------------
+        int snapTotal = 0, snapTotalWrong = 0;
+        for (int b = 1; b <= (int)Block.Bedrock; b++)
+            for (int value = 0; value <= Orientation.Count; value++)
+            {
+                snapTotal++;
+                if (!Blocks.Allows((Block)b, Blocks.Snap((Block)b, (byte)value))) snapTotalWrong++;
+            }
+        Check(snapTotalWrong == 0, $"{snapTotal}/{snapTotal} Snap results satisfy Allows over 8 blocks x 25 bytes");
+
+        byte[] strangers = { 25, 26, 200, 255 };
+        int strangerTotal = 0, strangerWrong = 0;
+        for (int b = 1; b <= (int)Block.Bedrock; b++)
+            foreach (byte stranger in strangers)
+            {
+                strangerTotal++;
+                // An out-of-range byte reads as None: no overflow, no throw.
+                if (!Blocks.Allows((Block)b, stranger)) strangerWrong++;
+                if (!Blocks.Allows((Block)b, Blocks.Snap((Block)b, stranger))) strangerWrong++;
+            }
+        Check(strangerWrong == 0, $"{strangerTotal}/{strangerTotal} out-of-range inputs read as None and snap inside the policy");
+
+        int snapPoses = 0, snapWrong = 0;
+        for (int f = 0; f < 6; f++)
+            for (int yi = 0; yi < 16; yi++)
+                for (int pi = 0; pi < 9; pi++)
+                {
+                    snapPoses++;
+                    byte o = BlockBehaviors.PlaceOrientation(Block.Grass, f, YawAt(yi), PitchAt(pi));
+                    if (!Blocks.Allows(Block.Grass, o) || Orientation.ImageOfLocalAxis(o, 1) != Vector3I.Up) snapWrong++;
+                }
+        Check(snapWrong == 0, $"{snapPoses}/{snapPoses} sampled poses snap to an allowed Grass orientation");
+
+        int defaults = 0, defaultsWrong = 0;
+        for (int b = 1; b <= (int)Block.Bedrock; b++)
+            for (int f = 0; f < 6; f++)
+                for (int yi = 0; yi < 16; yi++)
+                    for (int pi = 0; pi < 9; pi++)
+                    {
+                        defaults++;
+                        if (!Blocks.Allows((Block)b, BlockBehaviors.PlaceOrientation((Block)b, f, YawAt(yi), PitchAt(pi)))) defaultsWrong++;
+                    }
+        Check(defaultsWrong == 0, $"{defaults}/{defaults} per-block placement defaults are allowed orientations");
+
+        // -- the rotate key's model-layer cycle -------------------------------
+        int cycleBad = 0;
+        for (int i = 0; i <= Orientation.Count; i++)
+        {
+            if (i == Orientation.IdentityDuplicate) continue;
+            byte start = (byte)i;
+            var seen = new HashSet<int> { start };
+            byte value = start;
+            for (int step = 0; step < Orientation.Count; step++)
+            {
+                value = Orientation.Next(value);
+                seen.Add(value);
+            }
+            if (seen.Count != Orientation.Count || value != start) cycleBad++;
+        }
+        Check(cycleBad == 0, $"{24 - cycleBad}/24 canonical starts cycle through all 24 values and return");
+
+        int nextBad = 0;
+        for (int b = 0; b < 256; b++)
+        {
+            byte next = Orientation.Next((byte)b);
+            if (next == Orientation.IdentityDuplicate || !Orientation.IsValid(next)) nextBad++;
+        }
+        Check(nextBad == 0, "Orientation.Next is total over 256 bytes, valid and never the alias byte 9");
+
+        int sameStep = 0;
+        for (int value = 0; value <= Orientation.Count; value++)
+            if (Blocks.NextAllowed(Block.Stone, (byte)value) != Orientation.Next((byte)value)) sameStep++;
+        Check(sameStep == 0, $"{Orientation.Count + 1 - sameStep}/{Orientation.Count + 1} NextAllowed(Any) and Orientation.Next agree, alias 9 included");
+
+        int grassCycle = WalkAllowed(Block.Grass, BlockBehaviors.PlaceOrientation(Block.Grass, Face.Top, 0.32f, 0.21f));
+        int stoneCycle = WalkAllowed(Block.Stone, BlockBehaviors.PlaceOrientation(Block.Stone, 3, -1.1f, 0.5f));
+        Check(grassCycle == 4, $"4/4 allowed Grass orientations are reachable from its rule default ({grassCycle}/4)");
+        Check(stoneCycle == 24, $"24/24 allowed Stone orientations are reachable from its rule default ({stoneCycle}/24)");
+
+        int blockCycles = 0;
+        for (int b = 1; b <= (int)Block.Bedrock; b++)
+            if (WalkAllowed((Block)b, Blocks.NextAllowed((Block)b, Orientation.None)) == AllowedCount((Block)b)) blockCycles++;
+        Check(blockCycles == 8, $"{blockCycles}/8 blocks cycle through exactly their allowed set");
+
+        // -- the placement rule -----------------------------------------------
+        int placementWrong = 0;
+        for (int b = 0; b <= (int)Block.Bedrock; b++)
+            if (Blocks.PlacementOf((Block)b) != ((Block)b == Block.Wood ? Placement.Axis : Placement.None)) placementWrong++;
+        Check(placementWrong == 0, "PlacementOf is Axis for Wood and None for the other 8 blocks");
+
+        int noneDefault = 0;
+        for (int f = 0; f < 6; f++)
+            for (int yi = 0; yi < 16; yi++)
+                for (int pi = 0; pi < 9; pi++)
+                    if (BlockBehaviors.PlaceOrientationFor(Placement.None, f, YawAt(yi), PitchAt(pi)) != Orientation.None) noneDefault++;
+        Check(noneDefault == 0, $"Placement.None defaults to identity over 864 poses, it does not forbid rotation ({noneDefault} wrong)");
+
+        int ruleInvalid = 0;
+        for (int f = 0; f < 6; f++)
+            for (int yi = 0; yi < 16; yi++)
+                for (int pi = 0; pi < 9; pi++)
+                {
+                    if (!Orientation.IsValid(BlockBehaviors.PlaceOrientationFor(Placement.Axis, f, YawAt(yi), PitchAt(pi)))) ruleInvalid++;
+                    if (!Orientation.IsValid(BlockBehaviors.PlaceOrientationFor(Placement.Face, f, YawAt(yi), PitchAt(pi)))) ruleInvalid++;
+                }
+        Check(ruleInvalid == 0, $"1728 rule placements over 864 poses are valid ({ruleInvalid} invalid)");
+
+        int axisRuleWrong = 0;
+        for (int yi = 0; yi < 16; yi++)
+            for (int pi = 0; pi < 9; pi++)
+            {
+                if (Orientation.ImageOfLocalAxis(BlockBehaviors.PlaceOrientationFor(Placement.Axis, Face.Top, YawAt(yi), PitchAt(pi)), 1) != Vector3I.Up) axisRuleWrong++;
+                if (Orientation.ImageOfLocalAxis(BlockBehaviors.PlaceOrientationFor(Placement.Axis, Face.Bottom, YawAt(yi), PitchAt(pi)), 1) != Vector3I.Down) axisRuleWrong++;
+                if (!AlongAxis(BlockBehaviors.PlaceOrientationFor(Placement.Axis, Face.PosX, YawAt(yi), PitchAt(pi)), 1, 0)) axisRuleWrong++;
+                if (!AlongAxis(BlockBehaviors.PlaceOrientationFor(Placement.Axis, Face.PosZ, YawAt(yi), PitchAt(pi)), 1, 2)) axisRuleWrong++;
+            }
+        Check(axisRuleWrong == 0, $"clicked face is the log axis: Top/Bottom vertical, PosX along X, PosZ along Z ({axisRuleWrong} wrong)");
+
+        var axisReach = new HashSet<int>();
+        for (int f = 0; f < 6; f++)
+            for (int q = 0; q < 4; q++)
+                axisReach.Add(BlockBehaviors.PlaceOrientationFor(Placement.Axis, f, q * Mathf.Pi * 0.5f, 0f));
+        Check(axisReach.Count == 24, $"24/24 axis rotations reachable from 6 faces x 4 yaw quadrants ({axisReach.Count}/24)");
+
+        int faceRuleWrong = 0;
+        for (int q = 0; q < 4; q++)
+        {
+            float yaw = q * Mathf.Pi * 0.5f;
+            int toward = BlockBehaviors.FaceOfNormal(PlayerSystems.CameraBasis(yaw, 0f).Z);
+            for (int f = 0; f < 6; f++)
+            {
+                byte o = BlockBehaviors.PlaceOrientationFor(Placement.Face, f, yaw, 0f);
+                if (Orientation.ImageOfLocalAxis(o, 2) != FaceDirs[toward]) faceRuleWrong++;
+                if (!Perpendicular(Orientation.ImageOfLocalAxis(o, 1), Orientation.ImageOfLocalAxis(o, 2))) faceRuleWrong++;
+            }
+        }
+        Check(faceRuleWrong == 0, $"a front-facing block turns its +Z back toward the player with a perpendicular up ({faceRuleWrong} wrong)");
+
+        byte diagonal = BlockBehaviors.PlaceOrientationFor(Placement.Face, Face.PosX, Mathf.Pi * 0.25f, -Mathf.Pi * 0.25f);
+        Check(Orientation.IsValid(diagonal)
+            && Perpendicular(Orientation.ImageOfLocalAxis(diagonal, 1), Orientation.ImageOfLocalAxis(diagonal, 2)),
+            "front and up snapping onto one axis still yields a real rotation");
+        Check(Orientation.IsValid(BlockBehaviors.PlaceOrientationFor(Placement.Face, Face.Top, 0.3f, Mathf.Pi * 0.5f))
+            && Orientation.IsValid(BlockBehaviors.PlaceOrientationFor(Placement.Face, Face.Top, -1.2f, -Mathf.Pi * 0.5f)),
+            "looking straight up and straight down still yields valid rotations");
+
+        int normalWrong = 0;
+        for (int f = 0; f < 6; f++)
+            if (BlockBehaviors.FaceOfNormal(new Vector3(FaceDirs[f].X, FaceDirs[f].Y, FaceDirs[f].Z)) != f) normalWrong++;
+        Check(normalWrong == 0, $"6/6 axis normals snap to their own face ({normalWrong} wrong)");
+        Check(BlockBehaviors.FaceOfNormal(new Vector3(0.6f, 0.6f, 0.2f)) == Face.PosX
+            && BlockBehaviors.FaceOfNormal(new Vector3(-0.6f, 0.2f, 0.2f)) == Face.NegX
+            && BlockBehaviors.FaceOfNormal(new Vector3(0.2f, -0.9f, 0.1f)) == Face.Bottom
+            && BlockBehaviors.FaceOfNormal(new Vector3(0.25f, 0.2f, -0.5f)) == Face.NegZ,
+            "off-axis normals snap to their dominant axis, ties to the lowest face");
+        Check(BlockBehaviors.FaceOfNormal(Vector3.Zero) == Face.Top, "a zero normal returns the documented Face.Top default");
+
+        // -- the 24-rotation group --------------------------------------------
+        int distinct = 0;
+        for (int a = 0; a < Orientation.Count; a++)
+        {
+            bool seen = false;
+            for (int b = 0; b < a && !seen; b++) seen = SameRotation((byte)(a + 1), (byte)(b + 1));
+            if (!seen) distinct++;
+        }
+        Check(distinct == 24, $"24/24 table rotations are distinct ({distinct} distinct)");
+
+        int detWrong = 0, identity = 0, inverseWrong = 0;
+        for (int i = 0; i < Orientation.Count; i++)
+        {
+            byte o = (byte)(i + 1);
+            if (Determinant(o) != 1) detWrong++;
+            if (IsIdentity(o)) identity++;
+            byte inv = Orientation.Inverse(o);
+            if (!Orientation.IsValid(inv) || !Inverts(o, inv) || Orientation.Inverse(inv) != o) inverseWrong++;
+        }
+        Check(detWrong == 0, $"24/24 rotations have determinant +1 ({detWrong} wrong)");
+        Check(identity == 1, $"the identity rotation is in the table exactly once ({identity})");
+        Check(inverseWrong == 0, $"24/24 rotations are closed under Inverse and it is an involution ({inverseWrong} wrong)");
+
+        int noneWrong = 0;
+        for (int axis = 0; axis < 3; axis++)
+            if (Orientation.ImageOfLocalAxis(Orientation.None, axis) != FaceDirs[axis * 2]) noneWrong++;
+        for (int f = 0; f < 6; f++)
+            if (Orientation.LocalFace(Orientation.None, f) != f) noneWrong++;
+        for (int c = 0; c < 8; c++)
+            if (Orientation.LocalCorner(Orientation.None, c & 1, (c >> 1) & 1, (c >> 2) & 1) != c) noneWrong++;
+        Check(noneWrong == 0, $"None is the identity: 3 axes, 6 faces and 8 corners unchanged ({noneWrong} wrong)");
+
+        int axisTableWrong = 0, identityAlias = 0;
+        for (int dir = 0; dir < 6; dir++)
+            for (int roll = 0; roll < 4; roll++)
+            {
+                int row = dir * 4 + roll;
+                byte o = Orientation.Axis(dir, roll);
+                if (o != (row == 8 ? Orientation.None : (byte)(row + 1)) || !Orientation.IsValid(o)) axisTableWrong++;
+                if (o == Orientation.IdentityDuplicate) identityAlias++;
+            }
+        Check(axisTableWrong == 0, $"Axis(dir, roll) is the table order dir * 4 + roll with identity normalized ({axisTableWrong} wrong)");
+        Check(identityAlias == 0 && Orientation.Axis(Face.Top, 0) == Orientation.None
+            && Orientation.ImageOfLocalAxis(Orientation.Axis(Face.Top, 0), 1) == Vector3I.Up,
+            "Axis(Top, 0) is the identity and comes back as None, never byte 9");
+        Check(Orientation.Face(Face.PosZ, Face.Top) == Orientation.None
+            && Orientation.ToIndex(Orientation.None) == Orientation.ToIndex(Orientation.IdentityDuplicate),
+            "the identity pair of Face is None too, and both identity bytes share one table row");
+
+        int faceWrong = 0, faceUpWrong = 0;
+        var faceResults = new HashSet<int>();
+        for (int front = 0; front < 6; front++)
+            for (int up = 0; up < 6; up++)
+            {
+                byte o = Orientation.Face(front, up);
+                if (!Orientation.IsValid(o) || Orientation.ImageOfLocalAxis(o, 2) != FaceDirs[front]) faceWrong++;
+                if ((front >> 1) != (up >> 1) && Orientation.ImageOfLocalAxis(o, 1) != FaceDirs[up]) faceUpWrong++;
+                faceResults.Add(o);
+            }
+        Check(faceWrong == 0, $"Face(front, up) points local +Z at front for all 36 inputs ({faceWrong} wrong)");
+        Check(faceUpWrong == 0, $"Face(front, up) honours up when it is perpendicular ({faceUpWrong} wrong)");
+        Check(faceResults.Count == 24, $"Face(front, up) reaches all 24 rotations from 36 inputs ({faceResults.Count}/24)");
+        Check(Orientation.IsValid(Orientation.Face(9, 42)) && Orientation.IsValid(Orientation.Face(Face.Top, Face.Top)),
+            "Face is total for out-of-range and parallel inputs");
+
+        int nonBijections = 0;
+        for (int i = 0; i < Orientation.Count; i++)
+        {
+            byte o = (byte)(i + 1);
+            int seen = 0;
+            for (int w = 0; w < 6; w++)
+            {
+                int local = Orientation.LocalFace(o, w);
+                if ((uint)local > 5 || (seen & (1 << local)) != 0) { seen = -1; break; }
+                seen |= 1 << local;
+            }
+            if (seen != 0x3F) nonBijections++;
+        }
+        Check(nonBijections == 0, $"24/24 world-face -> local-face maps are bijections ({24 - nonBijections}/24)");
+
+        int cornerWrong = 0;
+        for (int i = 0; i < Orientation.Count; i++)
+            for (int w = 0; w < 6; w++)
+            {
+                var local = LocalCornersOf((byte)(i + 1), FaceCorners[w]);
+                var expected = PackedCorners(FaceCorners[Orientation.LocalFace((byte)(i + 1), w)]);
+                Array.Sort(local);
+                Array.Sort(expected);
+                for (int k = 0; k < 4; k++)
+                    if (local[k] != expected[k]) { cornerWrong++; break; }
+            }
+        Check(cornerWrong == 0, $"144/144 rotation x face corner maps match the mesher table ({144 - cornerWrong}/144)");
+
+        int mapWrong = 0;
+        for (int i = 0; i < Orientation.Count; i++)
+            for (int w = 0; w < 6; w++)
+            {
+                byte o = (byte)(i + 1);
+                var v = FaceDirs[w];
+                int axis = -1, sign = 0;
+                for (int a = 0; a < 3; a++)
+                {
+                    var col = Orientation.ImageOfLocalAxis(o, a);
+                    int dot = col.X * v.X + col.Y * v.Y + col.Z * v.Z;
+                    if (dot != 0) { axis = a; sign = dot; }
+                }
+                if (axis * 2 + (sign < 0 ? 1 : 0) != Orientation.LocalFace(o, w)) mapWrong++;
+            }
+        Check(mapWrong == 0, $"144/144 rotation face map cross-checked against a transposed matrix ({mapWrong} wrong)");
+
+        // Independent hand-written oracle for the six Axis(dir, 0) rotations: world face ->
+        // local face, derived from the contract's Base(dir) columns.
+        int[][] literal =
+        {
+            new[] { 2, 3, 4, 5, 0, 1 }, // Axis(PosX, 0)
+            new[] { 3, 2, 4, 5, 1, 0 }, // Axis(NegX, 0)
+            new[] { 0, 1, 2, 3, 4, 5 }, // Axis(Top, 0), the identity
+            new[] { 1, 0, 3, 2, 4, 5 }, // Axis(Bottom, 0)
+            new[] { 1, 0, 4, 5, 2, 3 }, // Axis(PosZ, 0)
+            new[] { 0, 1, 4, 5, 3, 2 }, // Axis(NegZ, 0)
+        };
+        int literalWrong = 0;
+        for (int dir = 0; dir < 6; dir++)
+            for (int w = 0; w < 6; w++)
+                if (Orientation.LocalFace(Orientation.Axis(dir, 0), w) != literal[dir][w]) literalWrong++;
+        Check(literalWrong == 0, $"36/36 literal axis-rotation face table ({36 - literalWrong}/36)");
+
+        // Two fixed quarter turns generate the whole group; one alone reaches only 4 values.
+        byte genY = Orientation.Axis(Face.Top, 1);
+        byte genZ = Orientation.Face(Face.PosZ, Face.NegX);
+        int generated = 0, generatedStarts = 0;
+        for (int i = 0; i <= Orientation.Count; i++)
+        {
+            if (i == Orientation.IdentityDuplicate) continue; // the alias is not a distinct rotation
+            generatedStarts++;
+            if (ClosureSize((byte)i, genY, genZ) == Orientation.Count) generated++;
+        }
+        Check(generated == generatedStarts && generatedStarts == 24,
+            $"24/24 canonical starts generate the whole group from two fixed quarter turns ({generated}/24)");
+        Check(ClosureSize(genY, genY) == 4, $"one quarter turn alone only reaches 4/24, so the check above can fail ({ClosureSize(genY, genY)}/24)");
+
+        // -- storage ----------------------------------------------------------
+        int stored = 0, storageWrong = 0;
+        var storeCell = new Vector3I(6, 3001, 6);
+        for (int b = 1; b <= (int)Block.Bedrock; b++)
+            for (int i = 0; i < Orientation.Count; i++)
+            {
+                stored++;
+                byte o = (byte)(i + 1);
+                world.SetBlock(storeCell.X, storeCell.Y, storeCell.Z, (Block)b, o);
+                if (world.GetBlock(storeCell.X, storeCell.Y, storeCell.Z) != (Block)b
+                    || world.GetOrientation(storeCell.X, storeCell.Y, storeCell.Z) != o) storageWrong++;
+            }
+        Check(storageWrong == 0, $"{stored}/{stored} block x orientation combinations store and read back ({storageWrong} wrong)");
+        Check(world.SetBlock(storeCell.X, storeCell.Y, storeCell.Z, Block.Wood, Orientation.None)
+            && world.GetOrientation(storeCell.X, storeCell.Y, storeCell.Z) == Orientation.None,
+            "an orientation can be written back to None");
+        Check(world.SetBlock(storeCell.X, storeCell.Y, storeCell.Z, Block.Grass, 13)
+            && world.GetOrientation(storeCell.X, storeCell.Y, storeCell.Z) == 13,
+            "storage stays permissive: a Upright block still stores any requested byte");
+        world.SetBlock(storeCell.X, storeCell.Y, storeCell.Z, Block.Air);
+
+        var fresh = world.CreateChunk(new Vector3I(90, 40, 90));
+        var freshOrientation = fresh.GetComponent<ChunkBlocks>().Orientation;
+        int stray = 0;
+        for (int i = 0; i < freshOrientation.Length; i++)
+            if (freshOrientation[i] != Orientation.None) stray++;
+        Check(freshOrientation.Length == ChunkMesher.Volume && stray == 0,
+            $"a fresh chunk is {ChunkMesher.Volume} x None ({stray} stray)");
+        Check(world.GetOrientation(500, 3000, 500) == Orientation.None, "an unloaded chunk reads as None");
+        Check(world.GetOrientation(-5, -80, 9) == Orientation.None, "an unloaded buried chunk reads as None");
+
+        var same = new Vector3I(7, 3002, 7);
+        Check(world.SetBlock(same.X, same.Y, same.Z, Block.Wood, 5), "place wood with orientation 5");
+        Check(!world.SetBlock(same.X, same.Y, same.Z, Block.Wood, 5), "the identical block + orientation is a no-op");
+        Check(world.SetBlock(same.X, same.Y, same.Z, Block.Wood, 7)
+            && world.GetOrientation(same.X, same.Y, same.Z) == 7, "same block, new orientation still applies");
+        Check(world.TryGetChunk(same.X, same.Y, same.Z, out var sameChunk) && sameChunk.Tags.Has<NeedsMesh>(),
+            "an orientation-only edit still marks the chunk dirty");
+        world.SetBlock(same.X, same.Y, same.Z, Block.Air);
+
+        var requestCell = new Vector3I(8, 3003, 8);
+        world.RequestEdit(EditRequest.Place(requestCell, Block.Wood, default, 13));
+        Check(world.ApplyPendingEdits() == 1 && world.GetOrientation(requestCell.X, requestCell.Y, requestCell.Z) == 13,
+            "the edit request pipeline carries the orientation");
+        world.SetBlock(requestCell.X, requestCell.Y, requestCell.Z, Block.Air);
+    }
+
+    /// <summary>How many values of the canonical space {None} u ({1..24} minus byte 9) the
+    /// type allows. Allows() answers for the alias byte 9 too, so counting must skip it.</summary>
+    private static int AllowedCount(Block b)
+    {
+        int count = 0;
+        for (int value = 0; value <= Orientation.Count; value++)
+            if (value != Orientation.IdentityDuplicate && Blocks.Allows(b, (byte)value)) count++;
+        return count;
+    }
+
+    /// <summary>Distinct allowed orientations the rotate key visits from <paramref name="start"/>
+    /// before returning to it.</summary>
+    private static int WalkAllowed(Block b, byte start)
+    {
+        var seen = new HashSet<int> { start };
+        byte value = start;
+        for (int step = 0; step < 64; step++)
+        {
+            value = Blocks.NextAllowed(b, value);
+            seen.Add(value);
+            if (value == start) break;
+        }
+        return seen.Count;
+    }
+
+    /// <summary>Distinct rotations reachable from <paramref name="start"/> by composing the
+    /// generators on the left, i.e. the size of the generated subgroup.</summary>
+    private static int ClosureSize(byte start, params byte[] generators)
+    {
+        var closure = new HashSet<int> { start };
+        var queue = new Queue<int>();
+        queue.Enqueue(start);
+        while (queue.Count > 0)
+        {
+            int current = queue.Dequeue();
+            foreach (byte g in generators)
+            {
+                int next = Orientation.Compose(g, (byte)current);
+                if (closure.Add(next)) queue.Enqueue(next);
+            }
+        }
+        return closure.Count;
+    }
+
+    private static bool SameRotation(byte a, byte b)
+        => Orientation.ImageOfLocalAxis(a, 0) == Orientation.ImageOfLocalAxis(b, 0)
+        && Orientation.ImageOfLocalAxis(a, 1) == Orientation.ImageOfLocalAxis(b, 1)
+        && Orientation.ImageOfLocalAxis(a, 2) == Orientation.ImageOfLocalAxis(b, 2);
+
+    /// <summary>Determinant of the matrix whose columns are the images of the local axes.</summary>
+    private static int Determinant(byte orientation)
+    {
+        var x = Orientation.ImageOfLocalAxis(orientation, 0);
+        var y = Orientation.ImageOfLocalAxis(orientation, 1);
+        var z = Orientation.ImageOfLocalAxis(orientation, 2);
+        return x.X * (y.Y * z.Z - y.Z * z.Y)
+            - x.Y * (y.X * z.Z - y.Z * z.X)
+            + x.Z * (y.X * z.Y - y.Y * z.X);
+    }
+
+    private static bool IsIdentity(byte orientation)
+        => Orientation.ImageOfLocalAxis(orientation, 0) == FaceDirs[0]
+        && Orientation.ImageOfLocalAxis(orientation, 1) == FaceDirs[2]
+        && Orientation.ImageOfLocalAxis(orientation, 2) == FaceDirs[4];
+
+    /// <summary>True when applying <paramref name="inv"/> to each image of <paramref name="o"/>
+    /// returns the local axis again, i.e. inv is o's inverse.</summary>
+    private static bool Inverts(byte o, byte inv)
+    {
+        for (int axis = 0; axis < 3; axis++)
+        {
+            var image = Orientation.ImageOfLocalAxis(o, axis);
+            int j = image.X != 0 ? 0 : image.Y != 0 ? 1 : 2;
+            int sign = image.X + image.Y + image.Z;
+            var back = Orientation.ImageOfLocalAxis(inv, j);
+            if (back.X * sign != (axis == 0 ? 1 : 0)
+                || back.Y * sign != (axis == 1 ? 1 : 0)
+                || back.Z * sign != (axis == 2 ? 1 : 0)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>True when the image of local <paramref name="localAxis"/> is exactly one world axis.</summary>
+    private static bool AlongAxis(byte orientation, int localAxis, int worldAxis)
+    {
+        var image = Orientation.ImageOfLocalAxis(orientation, localAxis);
+        int along = worldAxis == 0 ? image.X : worldAxis == 1 ? image.Y : image.Z;
+        return Mathf.Abs(along) == 1
+            && (worldAxis == 0 ? image.Y == 0 && image.Z == 0
+                : worldAxis == 1 ? image.X == 0 && image.Z == 0
+                : image.X == 0 && image.Y == 0);
+    }
+
+    private static bool Perpendicular(Vector3I a, Vector3I b) => a.X * b.X + a.Y * b.Y + a.Z * b.Z == 0;
+
+    private static int[] PackedCorners(int[] corners)
+    {
+        var packed = new int[4];
+        for (int i = 0; i < 4; i++)
+            packed[i] = corners[i * 3] | (corners[i * 3 + 1] << 1) | (corners[i * 3 + 2] << 2);
+        return packed;
+    }
+
+    private static int[] LocalCornersOf(byte orientation, int[] corners)
+    {
+        var packed = new int[4];
+        for (int i = 0; i < 4; i++)
+            packed[i] = Orientation.LocalCorner(orientation, corners[i * 3], corners[i * 3 + 1], corners[i * 3 + 2]);
+        return packed;
     }
 
     // ---- texture pack ----------------------------------------------------
@@ -476,6 +992,206 @@ public static class SelfTest
         if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
     }
 
+    /// <summary>Storage is deliberately loose (SetBlock keeps any byte) and the next stage's
+    /// no-memory sentinel is 255, so every byte-indexed Orientation table must answer for the
+    /// whole byte domain instead of throwing. Bytes 25..255 read as the identity.</summary>
+    private static void CheckOrientationByteDomain()
+    {
+        GD.Print("  ---- orientation over the whole byte domain ----");
+        int[] probes = { 25, 26, 100, 200, 255 };
+
+        int identityWrong = 0, uvWrong = 0, composeWrong = 0;
+        foreach (int probe in probes)
+        {
+            byte o = (byte)probe;
+            for (int w = 0; w < 6; w++)
+                if (Orientation.LocalFace(o, w) != w) identityWrong++;
+            for (int c = 0; c < 8; c++)
+                if (Orientation.LocalCorner(o, c & 1, (c >> 1) & 1, (c >> 2) & 1) != c) identityWrong++;
+            if (Orientation.Inverse(o) != Orientation.None) identityWrong++;
+            if (Orientation.ToIndex(o) != -1) identityWrong++;
+            if (Orientation.ImageOfLocalAxis(o, 1) != Vector3I.Up) identityWrong++;
+            for (int f = 0; f < 6; f++)
+                for (int c = 0; c < 8; c++)
+                    if (Orientation.Uv(o, f, c & 1, (c >> 1) & 1, (c >> 2) & 1)
+                        != Orientation.Uv(Orientation.None, f, c & 1, (c >> 1) & 1, (c >> 2) & 1)) uvWrong++;
+            for (int b = 0; b < 256; b++)
+            {
+                if (Orientation.Compose(o, (byte)b) != Orientation.Compose(Orientation.None, (byte)b)) composeWrong++;
+                if (Orientation.Compose((byte)b, o) != Orientation.Compose((byte)b, Orientation.None)) composeWrong++;
+            }
+        }
+        Check(identityWrong == 0,
+            $"the 5 out-of-range bytes read as the identity rotation ({identityWrong} wrong over 5 bytes)");
+        Check(uvWrong == 0, $"out-of-range bytes keep the identity tile UVs on all six faces ({uvWrong} wrong)");
+        Check(composeWrong == 0, $"Compose with an out-of-range byte changes nothing and never throws ({composeWrong} wrong)");
+
+        // The whole domain, not just the probes: 256 bytes x (6 faces + 8 corners + inverse).
+        int reads = 0;
+        for (int b = 0; b < 256; b++)
+        {
+            for (int w = 0; w < 6; w++) { _ = Orientation.LocalFace((byte)b, w); reads++; }
+            for (int c = 0; c < 8; c++) { _ = Orientation.LocalCorner((byte)b, c & 1, (c >> 1) & 1, (c >> 2) & 1); reads++; }
+            _ = Orientation.Inverse((byte)b);
+            reads++;
+        }
+        Check(reads == 256 * 15, $"{reads}/{256 * 15} byte-domain reads answered without throwing");
+
+        // Uv is the mesher's entry point and takes the stored byte directly: 256 x 6 x 8 reads.
+        int uvReads = 0;
+        for (int b = 0; b < 256; b++)
+            for (int f = 0; f < 6; f++)
+                for (int c = 0; c < 8; c++)
+                {
+                    _ = Orientation.Uv((byte)b, f, c & 1, (c >> 1) & 1, (c >> 2) & 1);
+                    uvReads++;
+                }
+        Check(uvReads == 256 * 48, $"{uvReads}/{256 * 48} Uv reads over the byte domain answered without throwing");
+    }
+
+    private static void CheckMesherOrientation(VoxelWorld world)
+    {
+        GD.Print("  ---- mesher orientation ----");
+
+        var entity = world.CreateChunk(new Vector3I(97, 97, 97));
+        var coord = entity.GetComponent<ChunkCoord>();
+        var blocks = entity.GetComponent<ChunkBlocks>().Value;
+        var stored = entity.GetComponent<ChunkBlocks>().Orientation;
+        Array.Clear(blocks);
+        Array.Clear(stored);
+        blocks[ChunkBlocks.Index(0, 0, 0)] = (byte)Block.Grass;
+
+        // The 48 identity UVs, pinned literally in Face order and FaceCorners order: the art
+        // starts at the top-left of every face and v runs downward.
+        float[,,] pinned =
+        {
+            { { 0, 1 }, { 1, 1 }, { 1, 0 }, { 0, 0 } }, // PosX
+            { { 0, 1 }, { 1, 1 }, { 1, 0 }, { 0, 0 } }, // NegX
+            { { 0, 1 }, { 1, 1 }, { 1, 0 }, { 0, 0 } }, // Top
+            { { 0, 1 }, { 1, 1 }, { 1, 0 }, { 0, 0 } }, // Bottom
+            { { 0, 1 }, { 1, 1 }, { 1, 0 }, { 0, 0 } }, // PosZ
+            { { 0, 1 }, { 1, 1 }, { 1, 0 }, { 0, 0 } }, // NegZ
+        };
+        // The v1 table the normalisation replaced, same corner order. PosX, Bottom and NegZ are
+        // the three faces the right-handed rule mirrors (u for PosX/NegZ, v for Bottom).
+        float[,,] v1 =
+        {
+            { { 1, 1 }, { 0, 1 }, { 0, 0 }, { 1, 0 } }, // PosX, was (z, 1 - y)
+            { { 0, 1 }, { 1, 1 }, { 1, 0 }, { 0, 0 } }, // NegX, unchanged
+            { { 0, 1 }, { 1, 1 }, { 1, 0 }, { 0, 0 } }, // Top, unchanged
+            { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } }, // Bottom, was (x, z)
+            { { 0, 1 }, { 1, 1 }, { 1, 0 }, { 0, 0 } }, // PosZ, unchanged
+            { { 1, 1 }, { 0, 1 }, { 0, 0 }, { 1, 0 } }, // NegZ, was (x, 1 - y)
+        };
+
+        stored[0] = Orientation.None;
+        var identity = ChunkMesher.Build(world, coord, blocks, out _).SurfaceGetArrays(0);
+        var identityUv = (Vector2[])identity[(int)Mesh.ArrayType.TexUV];
+        var identityNorm = (Vector3[])identity[(int)Mesh.ArrayType.Normal];
+
+        int pinnedWrong = 0, changeWrong = 0, closureWrong = 0;
+        var quads = new int[6][];
+        var identityU = new Vector3[6];
+        var identityV = new Vector3[6];
+        for (int f = 0; f < 6; f++)
+        {
+            quads[f] = FaceVertices(f, identityNorm);
+            if (quads[f] == null || !UvAxes(identity, quads[f], out identityU[f], out identityV[f]))
+            {
+                pinnedWrong++;
+                changeWrong++;
+                closureWrong++;
+                continue;
+            }
+            for (int i = 0; i < 4; i++)
+            {
+                var got = identityUv[quads[f][i]];
+                if (got != new Vector2(pinned[f, i, 0], pinned[f, i, 1])) pinnedWrong++;
+
+                bool uMirrored = f is Face.PosX or Face.NegZ;
+                bool vMirrored = f == Face.Bottom;
+                var old = new Vector2(v1[f, i, 0], v1[f, i, 1]);
+                if (got != new Vector2(uMirrored ? 1 - old.X : old.X, vMirrored ? 1 - old.Y : old.Y))
+                    changeWrong++;
+
+                int cx = FaceCorners[f][i * 3], cy = FaceCorners[f][i * 3 + 1], cz = FaceCorners[f][i * 3 + 2];
+                if (Orientation.Uv(Orientation.None, f, cx, cy, cz) != ChunkMesher.TileUv(f, cx, cy, cz))
+                    closureWrong++;
+            }
+        }
+        Check(pinnedWrong == 0, $"{48 - pinnedWrong}/48 identity UVs match the pinned normalised table");
+        Check(changeWrong == 0,
+            $"the 3 normalised faces are the v1 table exactly mirrored, the other 3 unchanged ({48 - changeWrong}/48)");
+        Check(closureWrong == 0,
+            $"identity orientation keeps the mesher's own TileUv on 48/48 corners ({closureWrong} wrong)");
+
+        int bases = 0;
+        for (int f = 0; f < 6; f++)
+            if (RightHanded(identity, quads[f])) bases++;
+        Check(bases == 6, $"{bases}/6 face UV bases are right-handed, u x v = -n ({6 - bases} wrong)");
+
+        int pairs = 0, pairsWrong = 0, pure = 0, flips = 0, setWrong = 0, seamWrong = 0, rotated = 0, rotatedWrong = 0;
+        for (int i = 0; i <= Orientation.Count; i++)
+        {
+            if (i == Orientation.IdentityDuplicate) continue; // byte 9 is the identity again
+            byte o = (byte)i;
+            stored[0] = o;
+            var arrays = ChunkMesher.Build(world, coord, blocks, out _).SurfaceGetArrays(0);
+            var norms = (Vector3[])arrays[(int)Mesh.ArrayType.Normal];
+            var uvs = (Vector2[])arrays[(int)Mesh.ArrayType.TexUV];
+            var uv2s = (Vector2[])arrays[(int)Mesh.ArrayType.TexUV2];
+
+            // The seam the ghost preview renders through: same emitter, so equal per element.
+            var preview = ChunkMesher.BuildBlock(Block.Grass, o).SurfaceGetArrays(0);
+            seamWrong += SameBlockArrays(arrays, preview);
+
+            for (int f = 0; f < 6; f++)
+            {
+                var q = FaceVertices(f, norms);
+                if (q == null) { pairsWrong++; flips++; continue; }
+                int want = TexPack.TileIndex(Block.Grass, Orientation.LocalFace(o, f));
+                bool tileOk = true;
+                var got = new Vector2[4];
+                var id = new Vector2[4];
+                for (int k = 0; k < 4; k++)
+                {
+                    if (uv2s[q[k]] != new Vector2(want, 0f)) tileOk = false;
+                    got[k] = uvs[q[k]];
+                    id[k] = identityUv[quads[f][k]];
+                }
+                pairs++;
+                if (!tileOk) pairsWrong++;
+
+                // The tile's own u/v axes must be the LOCAL face's identity axes carried by
+                // the block's rotation. Orientation's axis images are the oracle, so this does
+                // not read the UV table back at itself.
+                int localFace = Orientation.LocalFace(o, f);
+                if (UvAxes(arrays, q, out var u3, out var v3)
+                    && u3 == Rotated(o, identityU[localFace]) && v3 == Rotated(o, identityV[localFace]))
+                    rotated++;
+                else
+                    rotatedWrong++;
+
+                var gotSorted = SortedUv(got);
+                var idSorted = SortedUv(id);
+                bool sameSet = true;
+                for (int k = 0; k < 4; k++)
+                    if (gotSorted[k] != idSorted[k]) sameSet = false;
+                if (!sameSet) setWrong++;
+                else if (UvArea(got) * UvArea(id) <= 0f) flips++;
+                else pure++;
+            }
+        }
+        Check(pairs == 144 && pairsWrong == 0,
+            $"{pairs}/144 rotation x world-face pairs pick the LOCAL face's tile ({pairsWrong} wrong)");
+        Check(pure == 144 && flips == 0 && setWrong == 0,
+            $"{pure}/144 rotated face UVs are a pure rotation of identity, {flips} mirrored, {setWrong} changed corner set");
+        Check(rotated == 144 && rotatedWrong == 0,
+            $"{rotated}/144 face UV bases are the local axes carried by that rotation ({rotatedWrong} wrong)");
+        Check(seamWrong == 0,
+            $"BuildBlock equals Build per element over 24/24 orientations x 6 attributes ({seamWrong} mismatched)");
+    }
+
     private static void CheckMesherTextureArrays(VoxelWorld world)
     {
         var entity = world.CreateChunk(new Vector3I(90, 90, 90));
@@ -507,8 +1223,7 @@ public static class SelfTest
             "grass top and side use different tile layers");
     }
 
-    private static void WritePack(string dir, int version, string tilesJson, string extra = "")
-    {
+    private static void WritePack(string dir, int version, string tilesJson, string extra = "")    {
         Directory.CreateDirectory(dir);
         File.WriteAllText(dir + "/pack.json",
             $"{{ \"version\": {version}, \"name\": \"selftest\", \"tile_size\": 16{extra}, \"tiles\": {{ {tilesJson} }} }}");
@@ -547,6 +1262,94 @@ public static class SelfTest
         if (n.Y < -0.5f) return Face.Bottom;
         if (n.Z > 0.5f) return Face.PosZ;
         return Face.NegZ;
+    }
+
+    /// <summary>The four emitted vertex slots of one world face, in FaceCorners order, or null
+    /// when the face is missing or carries more or fewer than one quad.</summary>
+    private static int[] FaceVertices(int face, Vector3[] norms)
+    {
+        var found = new List<int>(4);
+        for (int i = 0; i < norms.Length; i++)
+            if (FaceOfNormal(norms[i]) == face) found.Add(i);
+        return found.Count == 4 ? found.ToArray() : null;
+    }
+
+    /// <summary>The 3D in-plane directions the tile's u and v axes point along, solved from two
+    /// emitted edges: e1/e3 are the face's 3D edges and d1/d3 the UV deltas of the same corners.</summary>
+    private static bool UvAxes(Godot.Collections.Array arrays, int[] quad, out Vector3 u3, out Vector3 v3)
+    {
+        u3 = v3 = Vector3.Zero;
+        if (quad == null) return false;
+        var verts = (Vector3[])arrays[(int)Mesh.ArrayType.Vertex];
+        var uvs = (Vector2[])arrays[(int)Mesh.ArrayType.TexUV];
+        Vector3 e1 = verts[quad[1]] - verts[quad[0]];
+        Vector3 e3 = verts[quad[3]] - verts[quad[0]];
+        Vector2 d1 = uvs[quad[1]] - uvs[quad[0]];
+        Vector2 d3 = uvs[quad[3]] - uvs[quad[0]];
+        float det = d1.X * d3.Y - d3.X * d1.Y;
+        if (det == 0f) return false;
+        // Invert [d1 d3] to get the 3D vector each UV axis points along, in the (e1, e3) basis.
+        Vector3 Along(Vector2 target)
+            => e1 * ((target.X * d3.Y - d3.X * target.Y) / det)
+             + e3 * ((d1.X * target.Y - target.X * d1.Y) / det);
+        u3 = Along(new Vector2(1, 0));
+        v3 = Along(new Vector2(0, 1));
+        return true;
+    }
+
+    /// <summary>True when the tile's own u and v axes point along 3D directions whose cross
+    /// product is the inward normal — the u x v = -n rule.</summary>
+    private static bool RightHanded(Godot.Collections.Array arrays, int[] quad)
+    {
+        if (!UvAxes(arrays, quad, out var u3, out var v3)) return false;
+        var norms = (Vector3[])arrays[(int)Mesh.ArrayType.Normal];
+        return u3.Cross(v3).Dot(norms[quad[0]]) < -0.5f;
+    }
+
+    /// <summary>The world direction of a local axis-aligned unit vector under the rotation, via
+    /// the group's own axis images — an oracle that does not read the UV table.</summary>
+    private static Vector3 Rotated(byte orientation, Vector3 v)
+    {
+        int axis = v.X != 0f ? 0 : v.Y != 0f ? 1 : 2;
+        var image = Orientation.ImageOfLocalAxis(orientation, axis);
+        float sign = axis == 0 ? v.X : axis == 1 ? v.Y : v.Z;
+        return new Vector3(image.X * sign, image.Y * sign, image.Z * sign);
+    }
+
+    /// <summary>Twice the signed UV area of the emitted corner order; its sign is the quad's
+    /// winding in tile space.</summary>
+    private static float UvArea(Vector2[] uv)
+        => (uv[1].X - uv[0].X) * (uv[3].Y - uv[0].Y) - (uv[3].X - uv[0].X) * (uv[1].Y - uv[0].Y);
+
+    private static Vector2[] SortedUv(Vector2[] uv)
+    {
+        var copy = (Vector2[])uv.Clone();
+        Array.Sort(copy, (a, b) => a.X != b.X ? a.X.CompareTo(b.X) : a.Y.CompareTo(b.Y));
+        return copy;
+    }
+
+    /// <summary>Per-element equality of the six attributes Build and BuildBlock emit.</summary>
+    private static int SameBlockArrays(Godot.Collections.Array a, Godot.Collections.Array b)
+    {
+        int wrong = 0;
+        if (!SameValues((Vector3[])a[(int)Mesh.ArrayType.Vertex], (Vector3[])b[(int)Mesh.ArrayType.Vertex])) wrong++;
+        if (!SameValues((Vector3[])a[(int)Mesh.ArrayType.Normal], (Vector3[])b[(int)Mesh.ArrayType.Normal])) wrong++;
+        if (!SameValues((Color[])a[(int)Mesh.ArrayType.Color], (Color[])b[(int)Mesh.ArrayType.Color])) wrong++;
+        if (!SameValues((Vector2[])a[(int)Mesh.ArrayType.TexUV], (Vector2[])b[(int)Mesh.ArrayType.TexUV])) wrong++;
+        if (!SameValues((Vector2[])a[(int)Mesh.ArrayType.TexUV2], (Vector2[])b[(int)Mesh.ArrayType.TexUV2])) wrong++;
+        if (!SameValues((int[])a[(int)Mesh.ArrayType.Index], (int[])b[(int)Mesh.ArrayType.Index])) wrong++;
+        return wrong;
+    }
+
+    /// <summary>Element-wise equality of two mesh attribute arrays of the same type.</summary>
+    private static bool SameValues(object a, object b)
+    {
+        var x = (Array)a;
+        var y = (Array)b;
+        if (x.Length != y.Length) return false;
+        for (int i = 0; i < x.Length; i++)
+            if (!x.GetValue(i).Equals(y.GetValue(i))) return false;
+        return true;
     }
 
     private static void Check(bool condition, string what)

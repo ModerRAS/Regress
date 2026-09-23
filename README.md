@@ -54,6 +54,7 @@ real, the release is not created.
 | Mouse | look |
 | LMB | hold to mine (duration depends on the block) |
 | RMB | place block |
+| `Q` | rotate the block being placed (cycles the allowed orientations) |
 | `1`–`7` | select block: stone, dirt, grass, sand, wood, plank, leaves |
 | `R` | respawn on the surface |
 | `Esc` | release the mouse |

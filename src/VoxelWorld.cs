@@ -381,7 +381,7 @@ public partial class VoxelWorld : Node3D
     {
         var cell = request.Cell;
         if (GetBlock(cell.X, cell.Y, cell.Z) != Block.Air) return false;
-        return SetBlock(cell.X, cell.Y, cell.Z, request.Block);
+        return SetBlock(cell.X, cell.Y, cell.Z, request.Block, request.Orientation);
     }
 
     public Entity CreateChunk(Vector3I key)
@@ -392,12 +392,14 @@ public partial class VoxelWorld : Node3D
         var coord = ChunkCoord.Of(key);
         var blocks = new byte[ChunkMesher.Volume];
         Terrain.Fill(coord, blocks);
+        // Terrain never rotates anything, so every generated cell starts at None.
+        var orientations = new byte[ChunkMesher.Volume];
         double genMs = (Time.GetTicksUsec() - started) / 1000.0;
         GenCount++;
         GenMsTotal += genMs;
         GenMsMax = Mathf.Max(GenMsMax, genMs);
 
-        var entity = Store.CreateEntity(coord, new ChunkBlocks { Value = blocks },
+        var entity = Store.CreateEntity(coord, new ChunkBlocks { Value = blocks, Orientation = orientations },
             default(ChunkVisual), Tags.Get<NeedsMesh>());
         _index[key] = entity;
 
@@ -474,7 +476,21 @@ public partial class VoxelWorld : Node3D
         return y > Terrain.HeightAt(x, z) ? Block.Air : Block.Stone;
     }
 
-    public bool SetBlock(int x, int y, int z, Block block)
+    /// <summary>Rotation stored in a cell. An unloaded chunk has no cells and reads as None.</summary>
+    public byte GetOrientation(int x, int y, int z)
+    {
+        var key = ChunkKeyOf(x, y, z);
+        if (_index.TryGetValue(key, out var entity))
+        {
+            var orientation = entity.GetComponent<ChunkBlocks>().Orientation;
+            return orientation[ChunkBlocks.Index(x - key.X * ChunkSize, y - key.Y * ChunkSize, z - key.Z * ChunkSize)];
+        }
+        return Orientation.None;
+    }
+
+    /// <summary>Writes one cell. A write that changes neither block nor orientation is a no-op,
+    /// but re-placing the same block with a different orientation still applies.</summary>
+    public bool SetBlock(int x, int y, int z, Block block, byte orientation = Orientation.None)
     {
         var key = ChunkKeyOf(x, y, z);
         if (!_index.TryGetValue(key, out var entity))
@@ -487,9 +503,10 @@ public partial class VoxelWorld : Node3D
 
         ref var data = ref entity.GetComponent<ChunkBlocks>();
         int index = ChunkBlocks.Index(x - key.X * ChunkSize, y - key.Y * ChunkSize, z - key.Z * ChunkSize);
-        if (data.Value[index] == (byte)block) return false;
+        if (data.Value[index] == (byte)block && data.Orientation[index] == orientation) return false;
 
         data.Value[index] = (byte)block;
+        data.Orientation[index] = orientation;
         entity.AddTag<KeepAlive>(); // player edits are never auto-unloaded
         MarkDirty(key);
 

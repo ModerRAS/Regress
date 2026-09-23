@@ -18,7 +18,7 @@ reads a file.
 - Optional **per-face overrides**: `<block>_<suffix>` keys (`stone_posx`, `leaves_negz`, …), suffix
   order `posx, negx, top, bottom, posz, negz`, layer `12 + block*6 + face`. A provided override
   wins for exactly that cell; every other cell keeps the frozen base map. A pack with only the
-  twelve base keys is unchanged; an override whose PNG is missing or bad falls back to `missing`
+  twelve base keys needs no changes; an override whose PNG is missing or bad falls back to `missing`
   like any other tile. One override allocates all 60 layers.
 - Discovery: `--pack=<dir>` → `user://texturepacks/<selected.txt>` → `res://texturepacks/default`
   → procedural tiles. The first loadable pack wins; the last rung reads no files. Every run
@@ -57,10 +57,10 @@ arrays[(int)Mesh.ArrayType.TexUV2] = uv2s.ToArray();  // (tileIndex, 0), the fro
 - `UV2.x` carries the canonical tile index as a float. It is the only channel that selects a
   tile, which is what makes the atlas fallback (below) a loader-side change with no mesher
   change.
-- v1 fixes only the UV origin (top-left of the PNG) and that side faces have `+v` downward from
-  their top edge. The per-face `u` axis is the mesher's to choose, because **v1 art must be
-  direction-agnostic** — no tile may depend on being mirrored or rotated. Adding a per-face UV
-  basis is a v2 change.
+- Art is authored **along the block's own up direction**. All six face bases are right-handed as
+  seen from outside (`u × v = -n`), so a directional glyph reads upright and un-mirrored on every
+  face. A block's stored rotation rotates both the tile choice (its local face) and the in-face
+  UVs, so the glyph turns with the block. The UV origin stays the PNG top-left.
 
 ### Optional per-face overrides
 
@@ -77,8 +77,8 @@ renumbered.
 
 Resolution per `(Block, Face)`: if the manifest provides that cell's exact override key, the cell
 samples layer `12 + cell`; otherwise it keeps the frozen base mapping in the completeness table
-below. A pack that ships only the twelve base keys resolves every cell through the base map,
-exactly as before — overrides are additive.
+below. A pack that ships only the twelve base keys resolves every cell through the base map —
+overrides are additive.
 
 Three override spellings are also base keys, and a manifest key is read as a **base** key when the
 name exists in both vocabularies: `grass_top` (Grass.Top), `grass_bottom` (Grass.Bottom) and
@@ -101,6 +101,36 @@ the override count travels on its own line, printed once when at least one overr
 ```
 texpack: <source>: N/48 per-face overrides
 ```
+
+## Block orientation
+
+Every placed block stores one of the 24 cube rotations in `ChunkBlocks.Orientation`, a byte
+array parallel to `Value` by the same index; byte `0` is identity, the default, so an un-oriented
+block is drawn in its authored orientation. (The three face bases normalised in this build are a
+separate, deliberate change — see Known weaknesses.) The mesher maps each world face back to the
+block's **local** face to choose the tile, then rotates the in-face UVs by the same rotation, so
+a directional glyph stays upright and is never mirrored. The tile vocabulary (12 base keys + 48
+per-face slots), the index table and the pack format are unchanged: a pack still names per local
+face.
+
+Orientation is the 24-element cube rotation group: a block can take any orientation its type
+allows. The block type carries an allowed-orientation policy (see docs/architecture.md), the
+placement rule snaps the candidate into that set, and the player cycles the allowed values with
+`Q`.
+
+Placement rules are deterministic and total: any clicked face, yaw and pitch yields a defined
+default orientation.
+
+- Log-like blocks take their axis from the clicked face. Clicking top or bottom gives a vertical
+  log; clicking a side gives a horizontal log along that axis. The roll around the axis comes
+  from the player's yaw quadrant.
+- Other directional blocks put their front (local +Z) toward the player, with up = world up.
+  When the player looks straight up or down, a deterministic horizontal fallback defines up.
+- Non-directional blocks default to identity; the type decides the default and the allowed set.
+
+The log-like rule is surjective: the six clicked faces at the four yaw quadrants reach all 24
+rotations, and `Q` iterates every orientation the block's policy allows (24 for an `Any` block,
+4 for an `Upright` block such as `Grass`), so no allowed orientation is out of reach.
 
 ## Completeness: Block × Face → tile key
 
@@ -501,7 +531,7 @@ the bundled pack, `--pack=texturepacks/default`. Restart to change packs — v1 
 | block definitions in packs (hardness, drops, new blocks) | a block registry file; art-only packs are the seam |
 | pack archives / downloads | unpack outside the game; the loader reads directories |
 | hot reload | reload on window focus once the texture build can rebuild |
-| per-face UV orientation, mirroring, rotation | a per-face basis table; v1 art is direction-agnostic |
+| per-face UV orientation, mirroring, rotation | **implemented** — all six bases are right-handed; cost is the three-face UV normalisation (see Known weaknesses) |
 | biome/global tinting | `COLOR` is already a tint multiplier; add a tint source and multiply |
 | translucent or emissive blocks (glass, glowstone) | material classes per block; v1 has one material |
 
@@ -529,3 +559,8 @@ the bundled pack, `--pack=texturepacks/default`. Restart to change packs — v1 
 8. **Per-face overrides are all-or-nothing in VRAM.** A pack that provides even one override
    carries the full 60-layer array — 5× the base art — because the fixed override indices leave
    no room for a partial array.
+9. **The per-face UV basis was normalised in this build.** The v1 bases mirrored `posx` and
+   `negz` in `u` and `bottom` in `v`; all six faces now satisfy `u × v = -n`, so those three
+   faces render mirrored against any earlier build. The bundled art is direction-agnostic
+   procedural noise, so the change is imperceptible there. Render/pixel-level baselines captured
+   before this change are void and must not be used as a regression baseline.

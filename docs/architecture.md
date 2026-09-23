@@ -19,7 +19,7 @@ unbounded.
 ```csharp
 // chunk: data
 struct ChunkCoord   { int X, Y, Z; }                        // 3D, unbounded Y
-struct ChunkBlocks  { byte[] Value; }                       // 4096 bytes, index = (y*16 + z)*16 + x
+struct ChunkBlocks  { byte[] Value; byte[] Orientation; }   // 4096 bytes each, index = (y*16 + z)*16 + x; Orientation: per-voxel 24-rotation, 0 = no rotation
 struct ChunkVisual  { MeshInstance3D Mesh; StaticBody3D Body; CollisionShape3D Shape; }
 
 // chunk: tags
@@ -29,13 +29,22 @@ struct KeepAlive      : ITag { }
 
 // player: data
 struct PlayerBody   { CharacterBody3D Node; Camera3D Camera; }
-struct PlayerState  { bool Flying, Creative; Block Selected; float Yaw, Pitch; float AppliedYaw, AppliedPitch; bool Applied; }
+struct PlayerState  { bool Flying, Creative; Block Selected; float Yaw, Pitch; byte PendingOrientation; float AppliedYaw, AppliedPitch; bool Applied; }
 struct PlayerIntent { Vector3 Wish; bool Jump, Up, Down, Sprint, Mining; int Place; bool AutoWalk, AutoSprint, AutoMine; }
 struct PlayerMining { Vector3I Target; float Progress; bool Active; }
 
 // player: tags
 struct PlayerTag : ITag { }
 ```
+
+`ChunkBlocks.Orientation` is the 24-element cube rotation group: every block stores one, a block
+can take any orientation its type allows, the placement rule supplies the default and the player
+cycles the allowed values with `Q`.
+
+Every block type also carries an allowed-orientation policy (`Any`, `Upright`, `Axis`, `Fixed`):
+the placement rule snaps a candidate orientation into the allowed set, and the rotate key
+iterates only allowed values. `Grass` is currently `Upright` (its turf must stay on top); every
+other block is `Any`.
 
 ### The rule for what becomes a tag and what becomes a field
 
@@ -51,9 +60,9 @@ struct PlayerTag : ITag { }
 
 Two component details are deliberate deviations from "keep components blittable":
 
-- **`ChunkBlocks` holds a `byte[]` reference** rather than an inline fixed buffer. 4096 bytes
-  inline would inflate every archetype and copy on every archetype move. Friflo returns
-  components by `ref`, so the array is still mutated in place with no copy.
+- **`ChunkBlocks` holds `byte[]` references** rather than inline fixed buffers. 4096 bytes
+  inline each would inflate every archetype and copy on every archetype move. Friflo returns
+  components by `ref`, so the arrays are still mutated in place with no copy.
 - **`ChunkVisual` holds Godot node handles** — an engine-aware component, and not the only one
   (`PlayerBody` holds the player node and camera; `PlayerIntent.Wish` and `PlayerMining.Target`
   are engine value types). It is a *handle*, never game state: no system reads gameplay facts out

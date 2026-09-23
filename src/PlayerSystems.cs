@@ -21,6 +21,10 @@ public struct PlayerState : IComponent
     public float Yaw;
     public float Pitch;
 
+    /// <summary>Orientation byte used by the next placement. The placement rule seeds it,
+    /// the rotate key steps it with <see cref="Blocks.NextAllowed"/>.</summary>
+    public byte PendingOrientation;
+
     /// <summary>Last values pushed to the scene graph. Node3D.Rotation is derived from the
     /// basis, so comparing against it is not bit-exact and would re-write every frame.</summary>
     public float AppliedYaw;
@@ -216,12 +220,16 @@ public static class PlayerSystems
         return true;
     }
 
-    /// <summary>Empty cell the crosshair is aiming at, if any.</summary>
-    public static bool PlaceTarget(VoxelWorld world, CharacterBody3D node, float yaw, float pitch, out Vector3I cell)
+    /// <summary>Empty cell the crosshair is aiming at, if any. <paramref name="clickedFace"/> is
+    /// the snapped face of the surface that was hit, or Face.Top when nothing was hit.</summary>
+    public static bool PlaceTarget(VoxelWorld world, CharacterBody3D node, float yaw, float pitch,
+        out Vector3I cell, out int clickedFace)
     {
         cell = default;
+        clickedFace = Regress.Face.Top;
         if (!Raycast(world, node, yaw, pitch, out var point, out var normal)) return false;
         cell = BlockAt(point + normal * 0.5f);
+        clickedFace = BlockBehaviors.FaceOfNormal(normal);
         return world.GetBlock(cell.X, cell.Y, cell.Z) == Block.Air;
     }
 
@@ -242,9 +250,14 @@ public static class PlayerSystems
     {
         ref var state = ref player.GetComponent<PlayerState>();
         ref var body = ref player.GetComponent<PlayerBody>();
-        if (!PlaceTarget(world, body.Node, state.Yaw, state.Pitch, out var cell)) return null;
+        // The pending orientation is read once here; the rotate key owns every write to it.
+        if (!PlaceTarget(world, body.Node, state.Yaw, state.Pitch, out var cell, out int clickedFace)) return null;
         if (PlayerBox(body.Node).Intersects(BlockBox(cell))) return null; // never inside the player
-        world.RequestEdit(EditRequest.Place(cell, state.Selected, player));
+        // The request layer owns the guarantee: a pending byte the selected type disallows is
+        // re-derived from the placement rule before it can reach the world.
+        if (!Blocks.Allows(state.Selected, state.PendingOrientation))
+            state.PendingOrientation = BlockBehaviors.PlaceOrientation(state.Selected, clickedFace, state.Yaw, state.Pitch);
+        world.RequestEdit(EditRequest.Place(cell, state.Selected, player, state.PendingOrientation));
         return cell;
     }
 

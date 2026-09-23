@@ -36,7 +36,12 @@ public partial class Player : CharacterBody3D
 
         Self = World.Store.CreateEntity(
             new PlayerBody { Node = this, Camera = Camera },
-            new PlayerState { Flying = false, Creative = false, Selected = Block.Stone, Yaw = 0, Pitch = 0 },
+            new PlayerState
+            {
+                Flying = false, Creative = false, Selected = Block.Stone, Yaw = 0, Pitch = 0,
+                // The placement rule seeds the pending orientation; Q steers it from here.
+                PendingOrientation = BlockBehaviors.PlaceOrientation(Block.Stone, Face.Top, 0f, 0f),
+            },
             default(PlayerIntent),
             default(PlayerMining),
             Tags.Get<PlayerTag>());
@@ -83,12 +88,15 @@ public partial class Player : CharacterBody3D
         if (slot >= 0 && slot < Blocks.Palette.Length)
         {
             state.Selected = Blocks.Palette[slot];
+            // The rule gives the new block its initial orientation; Q turns on from there.
+            state.PendingOrientation = BlockBehaviors.PlaceOrientation(state.Selected, Face.Top, state.Yaw, state.Pitch);
             GetNodeOrNull<Game>("/root/Main")?.RefreshHud();
             return;
         }
 
         if (key == Key.F) state.Flying = !state.Flying;
         if (key == Key.G) state.Creative = !state.Creative;
+        if (key == Key.Q) state.PendingOrientation = Blocks.NextAllowed(state.Selected, state.PendingOrientation);
         if (key == Key.R) PlayerSystems.TeleportToSurface(Self, World);
     }
 

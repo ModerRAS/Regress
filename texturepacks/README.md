@@ -16,15 +16,15 @@ A pack is a directory with a `pack.json` and the PNGs it names. Twelve base keys
 
 Packs may also override individual cube faces with optional `<block>_<suffix>` keys
 (`stone_posx`, `leaves_negz`, …), where `<block>` is a renderable block and `<suffix>` is one of
-`posx, negx, top, bottom, posz, negz`. A pack that names only the twelve base keys is completely
-unaffected; an override's layer is `12 + blockOrdinal*6 + faceIndex`, in the order the spec's
+`posx, negx, top, bottom, posz, negz`. A pack that names only the twelve base keys needs no
+changes; an override's layer is `12 + blockOrdinal*6 + faceIndex`, in the order the spec's
 completeness table lists.
 
-Per-face tiles change *which* texture a face samples, not how it is oriented: a letter or arrow
-still reads differently on each side, because v1 fixes per-face UV orientation as a non-goal and
-requires direction-agnostic art. Making a glyph readable on all four faces needs a per-face UV
-basis table in `ChunkMesher` (a v2 change; see the spec's non-goal table), plus art authored for
-that basis.
+Per-face tiles name a per **local** face, and a placed block now carries one of the 24 cube
+rotations, so its tiles and their in-face UVs rotate with the block: a letter or arrow stays
+upright and un-mirrored on every face. The three v1 bases that were mirrored as seen from
+outside (`posx` and `negz` in `u`, `bottom` in `v`) were normalised, so pixels on those three
+faces are mirrored against earlier builds.
 
 ```json
 {

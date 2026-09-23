@@ -23,10 +23,12 @@ public struct ChunkCoord : IComponent
     public override string ToString() => $"({X},{Y},{Z})";
 }
 
-/// <summary>Voxel payload of a chunk: 4096 bytes, index = (y * 16 + z) * 16 + x.</summary>
+/// <summary>Voxel payload of a chunk: two 4096-byte arrays, index = (y * 16 + z) * 16 + x.
+/// Every block carries an orientation; byte 0 (<see cref="Orientation.None"/>) is no rotation.</summary>
 public struct ChunkBlocks : IComponent
 {
     public byte[] Value;
+    public byte[] Orientation;
 
     public static int Index(int x, int y, int z) => (y * 16 + z) * 16 + x;
 }
