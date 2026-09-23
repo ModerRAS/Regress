@@ -18,358 +18,358 @@ namespace Regress;
 /// </summary>
 public static class Orientation
 {
-    /// <summary>No rotation: the block is stored and rendered exactly as authored.</summary>
-    public const byte None = 0;
+	/// <summary>No rotation: the block is stored and rendered exactly as authored.</summary>
+	public const byte None = 0;
 
-    /// <summary>Byte 9 is the identity's own table row, the same rotation as None. Axis, Face,
-    /// Compose and Next never produce it; it stays valid for storage reads.</summary>
-    public const byte IdentityDuplicate = IdentityRow + 1;
+	/// <summary>Byte 9 is the identity's own table row, the same rotation as None. Axis, Face,
+	/// Compose and Next never produce it; it stays valid for storage reads.</summary>
+	public const byte IdentityDuplicate = IdentityRow + 1;
 
-    /// <summary>Number of proper cube rotations.</summary>
-    public const int Count = 24;
+	/// <summary>Number of proper cube rotations.</summary>
+	public const int Count = 24;
 
-    /// <summary>The byte domain, not the rotation count: storage is deliberately loose and keeps
-    /// any byte, so every byte-indexed table has 256 rows and 25..255 all read as the identity.</summary>
-    private const int Bytes = 256;
+	/// <summary>The byte domain, not the rotation count: storage is deliberately loose and keeps
+	/// any byte, so every byte-indexed table has 256 rows and 25..255 all read as the identity.</summary>
+	private const int Bytes = 256;
 
-    // Table row of the identity: Base(Top) is the identity and Roll(0) is too.
-    private const int IdentityRow = Regress.Face.Top * 4;
+	// Table row of the identity: Base(Top) is the identity and Roll(0) is too.
+	private const int IdentityRow = Regress.Face.Top * 4;
 
-    // Directions in Face order, 0..5 = PosX, NegX, Top, Bottom, PosZ, NegZ. Same order as
-    // ChunkMesher.Dirs, duplicated so the rotation group does not depend on the mesher.
-    private static readonly Vector3I[] Dirs =
-    {
-        new(1, 0, 0), new(-1, 0, 0), new(0, 1, 0), new(0, -1, 0), new(0, 0, 1), new(0, 0, -1),
-    };
+	// Directions in Face order, 0..5 = PosX, NegX, Top, Bottom, PosZ, NegZ. Same order as
+	// ChunkMesher.Dirs, duplicated so the rotation group does not depend on the mesher.
+	private static readonly Vector3I[] Dirs =
+	{
+		new(1, 0, 0), new(-1, 0, 0), new(0, 1, 0), new(0, -1, 0), new(0, 0, 1), new(0, 0, -1),
+	};
 
-    // Roll(quarter) around the LOCAL +Y axis: ex = (c, 0, -s), ez = (s, 0, c).
-    private static readonly int[] Cos = { 1, 0, -1, 0 };
-    private static readonly int[] Sin = { 0, 1, 0, -1 };
+	// Roll(quarter) around the LOCAL +Y axis: ex = (c, 0, -s), ez = (s, 0, c).
+	private static readonly int[] Cos = { 1, 0, -1, 0 };
+	private static readonly int[] Sin = { 0, 1, 0, -1 };
 
-    // ---- flat lookup tables, all filled by the static constructor --------------------
-    // Rows are indexed by the orientation byte: row 0 is the identity (None), rows 1..24 are
-    // table rows 0..23.
+	// ---- flat lookup tables, all filled by the static constructor --------------------
+	// Rows are indexed by the orientation byte: row 0 is the identity (None), rows 1..24 are
+	// table rows 0..23.
 
-    /// <summary>[orientation * 3 + localAxis] -> world image of that local axis.</summary>
-    private static readonly Vector3I[] _axisImages = new Vector3I[Bytes * 3];
+	/// <summary>[orientation * 3 + localAxis] -> world image of that local axis.</summary>
+	private static readonly Vector3I[] _axisImages = new Vector3I[Bytes * 3];
 
-    /// <summary>[orientation] -> the rotation that undoes it.</summary>
-    private static readonly byte[] _inverse = new byte[Bytes];
+	/// <summary>[orientation] -> the rotation that undoes it.</summary>
+	private static readonly byte[] _inverse = new byte[Bytes];
 
-    /// <summary>[orientation * 6 + worldFace] -> local face whose image lies along Dirs[worldFace].</summary>
-    private static readonly byte[] _localFace = new byte[Bytes * 6];
+	/// <summary>[orientation * 6 + worldFace] -> local face whose image lies along Dirs[worldFace].</summary>
+	private static readonly byte[] _localFace = new byte[Bytes * 6];
 
-    /// <summary>[orientation * 8 + packed world corner] -> packed local corner.</summary>
-    private static readonly byte[] _localCorner = new byte[Bytes * 8];
+	/// <summary>[orientation * 8 + packed world corner] -> packed local corner.</summary>
+	private static readonly byte[] _localCorner = new byte[Bytes * 8];
 
-    /// <summary>[orientation * 48 + worldFace * 8 + packed world corner] -> tile-local UV.</summary>
-    private static readonly Vector2[] _uv = new Vector2[Bytes * 6 * 8];
+	/// <summary>[orientation * 48 + worldFace * 8 + packed world corner] -> tile-local UV.</summary>
+	private static readonly Vector2[] _uv = new Vector2[Bytes * 6 * 8];
 
-    /// <summary>[dir * 4 + roll] -> orientation byte. See <see cref="Axis"/>.</summary>
-    private static readonly byte[] _byDirRoll = new byte[Count];
+	/// <summary>[dir * 4 + roll] -> orientation byte. See <see cref="Axis"/>.</summary>
+	private static readonly byte[] _byDirRoll = new byte[Count];
 
-    /// <summary>[upFace * 6 + frontFace] -> orientation with those local +Y / +Z images.</summary>
-    private static readonly byte[] _byUpFront = new byte[36];
+	/// <summary>[upFace * 6 + frontFace] -> orientation with those local +Y / +Z images.</summary>
+	private static readonly byte[] _byUpFront = new byte[36];
 
-    /// <summary>[face] -> lowest-index face perpendicular to it, for <see cref="Face"/> snapping.</summary>
-    private static readonly byte[] _perpendicular = new byte[6];
+	/// <summary>[face] -> lowest-index face perpendicular to it, for <see cref="Face"/> snapping.</summary>
+	private static readonly byte[] _perpendicular = new byte[6];
 
-    /// <summary>[orientation] -> table row, -1 when invalid. None maps to the identity row.</summary>
-    private static readonly sbyte[] _toIndex = new sbyte[Bytes];
+	/// <summary>[orientation] -> table row, -1 when invalid. None maps to the identity row.</summary>
+	private static readonly sbyte[] _toIndex = new sbyte[Bytes];
 
-    /// <summary>[a * (Count + 1) + b] -> row of M(a) * M(b): b applied first, then a.</summary>
-    private static readonly byte[] _compose = new byte[(Count + 1) * (Count + 1)];
+	/// <summary>[a * (Count + 1) + b] -> row of M(a) * M(b): b applied first, then a.</summary>
+	private static readonly byte[] _compose = new byte[(Count + 1) * (Count + 1)];
 
-    static Orientation()
-    {
-        // 24 rows: row = dir * 4 + roll, rotation = compose(Base(dir), Roll(roll)) with Roll
-        // applied first. Keep this order: Axis() is defined as a lookup of it.
-        for (int dir = 0; dir < 6; dir++)
-        {
-            Base(dir, out var bx, out var by, out var bz);
-            for (int roll = 0; roll < 4; roll++)
-            {
-                int row = dir * 4 + roll;
-                _axisImages[(row + 1) * 3] = Mul(bx, by, bz, new Vector3I(Cos[roll], 0, -Sin[roll]));
-                _axisImages[(row + 1) * 3 + 1] = Mul(bx, by, bz, new Vector3I(0, 1, 0));
-                _axisImages[(row + 1) * 3 + 2] = Mul(bx, by, bz, new Vector3I(Sin[roll], 0, Cos[roll]));
-                _byDirRoll[row] = Normalize(row);
-                _toIndex[row + 1] = (sbyte)row;
-            }
-        }
+	static Orientation()
+	{
+		// 24 rows: row = dir * 4 + roll, rotation = compose(Base(dir), Roll(roll)) with Roll
+		// applied first. Keep this order: Axis() is defined as a lookup of it.
+		for (int dir = 0; dir < 6; dir++)
+		{
+			Base(dir, out var bx, out var by, out var bz);
+			for (int roll = 0; roll < 4; roll++)
+			{
+				int row = dir * 4 + roll;
+				_axisImages[(row + 1) * 3] = Mul(bx, by, bz, new Vector3I(Cos[roll], 0, -Sin[roll]));
+				_axisImages[(row + 1) * 3 + 1] = Mul(bx, by, bz, new Vector3I(0, 1, 0));
+				_axisImages[(row + 1) * 3 + 2] = Mul(bx, by, bz, new Vector3I(Sin[roll], 0, Cos[roll]));
+				_byDirRoll[row] = Normalize(row);
+				_toIndex[row + 1] = (sbyte)row;
+			}
+		}
 
-        // None is the identity, so its row is a copy of the identity row.
-        for (int axis = 0; axis < 3; axis++)
-            _axisImages[axis] = _axisImages[(IdentityRow + 1) * 3 + axis];
-        _toIndex[None] = IdentityRow;
+		// None is the identity, so its row is a copy of the identity row.
+		for (int axis = 0; axis < 3; axis++)
+			_axisImages[axis] = _axisImages[(IdentityRow + 1) * 3 + axis];
+		_toIndex[None] = IdentityRow;
 
-        // The encoding is only unambiguous if dir * 4 + roll really is 24 distinct rotations.
-        for (int a = 0; a < Count; a++)
-            for (int b = a + 1; b < Count; b++)
-                System.Diagnostics.Debug.Assert(!SameRotation((byte)(a + 1), (byte)(b + 1)),
-                    "Orientation: the 24 table rotations must be distinct");
+		// The encoding is only unambiguous if dir * 4 + roll really is 24 distinct rotations.
+		for (int a = 0; a < Count; a++)
+			for (int b = a + 1; b < Count; b++)
+				System.Diagnostics.Debug.Assert(!SameRotation((byte)(a + 1), (byte)(b + 1)),
+					"Orientation: the 24 table rotations must be distinct");
 
-        BuildFaceTables();
-        BuildCornerTable();
-        BuildInverseTable();
-        BuildComposeTable();
-        FillOutOfRangeRows();
-        BuildUvTable();
-    }
+		BuildFaceTables();
+		BuildCornerTable();
+		BuildInverseTable();
+		BuildComposeTable();
+		FillOutOfRangeRows();
+		BuildUvTable();
+	}
 
-    // ---- construction helpers --------------------------------------------------------
+	// ---- construction helpers --------------------------------------------------------
 
-    /// <summary>Columns of Base(dir): the rotation that points local +Y at Dirs[dir].</summary>
-    private static void Base(int dir, out Vector3I bx, out Vector3I by, out Vector3I bz)
-    {
-        by = Dirs[dir];
-        if (dir == Regress.Face.Top)
-        {
-            bx = new Vector3I(1, 0, 0);
-            bz = new Vector3I(0, 0, 1);
-            return;
-        }
-        if (dir == Regress.Face.Bottom)
-        {
-            bx = new Vector3I(-1, 0, 0);
-            bz = new Vector3I(0, 0, 1); // 180 degrees about +Z, so local +Z is kept
-            return;
-        }
-        bz = new Vector3I(0, 1, 0);
-        bx = Cross(by, bz);
-    }
+	/// <summary>Columns of Base(dir): the rotation that points local +Y at Dirs[dir].</summary>
+	private static void Base(int dir, out Vector3I bx, out Vector3I by, out Vector3I bz)
+	{
+		by = Dirs[dir];
+		if (dir == Regress.Face.Top)
+		{
+			bx = new Vector3I(1, 0, 0);
+			bz = new Vector3I(0, 0, 1);
+			return;
+		}
+		if (dir == Regress.Face.Bottom)
+		{
+			bx = new Vector3I(-1, 0, 0);
+			bz = new Vector3I(0, 0, 1); // 180 degrees about +Z, so local +Z is kept
+			return;
+		}
+		bz = new Vector3I(0, 1, 0);
+		bx = Cross(by, bz);
+	}
 
-    private static void BuildFaceTables()
-    {
-        for (int f = 0; f < 6; f++)
-            for (int d = 0; d < 6; d++)
-                if (Dot(Dirs[f], Dirs[d]) == 0) { _perpendicular[f] = (byte)d; break; }
+	private static void BuildFaceTables()
+	{
+		for (int f = 0; f < 6; f++)
+			for (int d = 0; d < 6; d++)
+				if (Dot(Dirs[f], Dirs[d]) == 0) { _perpendicular[f] = (byte)d; break; }
 
-        for (int i = 0; i < Count; i++)
-        {
-            int tableRow = i;
-            int value = i + 1; // the byte this row is stored as
-            _byUpFront[AxisOf(_axisImages[value * 3 + 1]) * 6 + AxisOf(_axisImages[value * 3 + 2])] = Normalize(tableRow);
-            for (int w = 0; w < 6; w++)
-                for (int f = 0; f < 6; f++)
-                    if (LocalFaceImage(value, f) == Dirs[w]) { _localFace[value * 6 + w] = (byte)f; break; }
-        }
-        for (int w = 0; w < 6; w++) _localFace[w] = (byte)w; // None is the identity
-    }
+		for (int i = 0; i < Count; i++)
+		{
+			int tableRow = i;
+			int value = i + 1; // the byte this row is stored as
+			_byUpFront[AxisOf(_axisImages[value * 3 + 1]) * 6 + AxisOf(_axisImages[value * 3 + 2])] = Normalize(tableRow);
+			for (int w = 0; w < 6; w++)
+				for (int f = 0; f < 6; f++)
+					if (LocalFaceImage(value, f) == Dirs[w]) { _localFace[value * 6 + w] = (byte)f; break; }
+		}
+		for (int w = 0; w < 6; w++) _localFace[w] = (byte)w; // None is the identity
+	}
 
-    /// <summary>World direction of the outward normal of local face <paramref name="face"/>.</summary>
-    private static Vector3I LocalFaceImage(int row, int face)
-    {
-        var axis = _axisImages[row * 3 + (face >> 1)];
-        return (face & 1) == 0 ? axis : new Vector3I(-axis.X, -axis.Y, -axis.Z);
-    }
+	/// <summary>World direction of the outward normal of local face <paramref name="face"/>.</summary>
+	private static Vector3I LocalFaceImage(int row, int face)
+	{
+		var axis = _axisImages[row * 3 + (face >> 1)];
+		return (face & 1) == 0 ? axis : new Vector3I(-axis.X, -axis.Y, -axis.Z);
+	}
 
-    /// <summary>
-    /// R^-1 maps the world corner to the local one. With q = p - 0.5 and qLocal = R^-1 q,
-    /// component a of qLocal is (R * local axis a) . q, so if R maps local axis a onto world
-    /// axis j with sign sigma the corner bit is sigma &gt; 0 ? world[j] : 1 - world[j]. Integer
-    /// only, so the result is exact.
-    /// </summary>
-    private static void BuildCornerTable()
-    {
-        for (int row = 0; row <= Count; row++)
-        {
-            for (int corner = 0; corner < 8; corner++)
-            {
-                int local = 0;
-                for (int axis = 0; axis < 3; axis++)
-                {
-                    var image = _axisImages[row * 3 + axis];
-                    int world = (corner >> AxisIndex(image)) & 1;
-                    int bit = image.X + image.Y + image.Z > 0 ? world : 1 - world;
-                    if (bit != 0) local |= 1 << axis;
-                }
-                _localCorner[row * 8 + corner] = (byte)local;
-            }
-        }
-    }
+	/// <summary>
+	/// R^-1 maps the world corner to the local one. With q = p - 0.5 and qLocal = R^-1 q,
+	/// component a of qLocal is (R * local axis a) . q, so if R maps local axis a onto world
+	/// axis j with sign sigma the corner bit is sigma &gt; 0 ? world[j] : 1 - world[j]. Integer
+	/// only, so the result is exact.
+	/// </summary>
+	private static void BuildCornerTable()
+	{
+		for (int row = 0; row <= Count; row++)
+		{
+			for (int corner = 0; corner < 8; corner++)
+			{
+				int local = 0;
+				for (int axis = 0; axis < 3; axis++)
+				{
+					var image = _axisImages[row * 3 + axis];
+					int world = (corner >> AxisIndex(image)) & 1;
+					int bit = image.X + image.Y + image.Z > 0 ? world : 1 - world;
+					if (bit != 0) local |= 1 << axis;
+				}
+				_localCorner[row * 8 + corner] = (byte)local;
+			}
+		}
+	}
 
-    private static void BuildInverseTable()
-    {
-        _inverse[None] = None; // the identity, so the storage default stays the default
-        for (int a = 0; a < Count; a++)
-            for (int b = 0; b < Count; b++)
-                if (ComposesToIdentity(b + 1, a + 1)) { _inverse[a + 1] = (byte)(b + 1); break; }
-    }
+	private static void BuildInverseTable()
+	{
+		_inverse[None] = None; // the identity, so the storage default stays the default
+		for (int a = 0; a < Count; a++)
+			for (int b = 0; b < Count; b++)
+				if (ComposesToIdentity(b + 1, a + 1)) { _inverse[a + 1] = (byte)(b + 1); break; }
+	}
 
-    /// <summary>True when the rotation at row <paramref name="b"/> undoes the one at row <paramref name="a"/>.</summary>
-    private static bool ComposesToIdentity(int b, int a)
-    {
-        var bx = _axisImages[b * 3];
-        var by = _axisImages[b * 3 + 1];
-        var bz = _axisImages[b * 3 + 2];
-        for (int axis = 0; axis < 3; axis++)
-            if (Mul(bx, by, bz, _axisImages[a * 3 + axis]) != Unit(axis)) return false;
-        return true;
-    }
+	/// <summary>True when the rotation at row <paramref name="b"/> undoes the one at row <paramref name="a"/>.</summary>
+	private static bool ComposesToIdentity(int b, int a)
+	{
+		var bx = _axisImages[b * 3];
+		var by = _axisImages[b * 3 + 1];
+		var bz = _axisImages[b * 3 + 2];
+		for (int axis = 0; axis < 3; axis++)
+			if (Mul(bx, by, bz, _axisImages[a * 3 + axis]) != Unit(axis)) return false;
+		return true;
+	}
 
-    /// <summary>Byte for a table row. The identity row is stored as None, never as the
-    /// duplicate byte 9, so the identity has exactly one generated byte value.</summary>
-    private static byte Normalize(int row) => row == IdentityRow ? None : (byte)(row + 1);
+	/// <summary>Byte for a table row. The identity row is stored as None, never as the
+	/// duplicate byte 9, so the identity has exactly one generated byte value.</summary>
+	private static byte Normalize(int row) => row == IdentityRow ? None : (byte)(row + 1);
 
-    /// <summary>Maps every valid pair onto the row of M(a) * M(b).</summary>
-    private static void BuildComposeTable()
-    {
-        int stride = Count + 1;
-        for (int a = 0; a < stride; a++)
-        {
-            var ax = _axisImages[a * 3];
-            var ay = _axisImages[a * 3 + 1];
-            var az = _axisImages[a * 3 + 2];
-            for (int b = 0; b < stride; b++)
-                _compose[a * stride + b] = RowOf(
-                    Mul(ax, ay, az, _axisImages[b * 3]),
-                    Mul(ax, ay, az, _axisImages[b * 3 + 1]),
-                    Mul(ax, ay, az, _axisImages[b * 3 + 2]));
-        }
-    }
+	/// <summary>Maps every valid pair onto the row of M(a) * M(b).</summary>
+	private static void BuildComposeTable()
+	{
+		int stride = Count + 1;
+		for (int a = 0; a < stride; a++)
+		{
+			var ax = _axisImages[a * 3];
+			var ay = _axisImages[a * 3 + 1];
+			var az = _axisImages[a * 3 + 2];
+			for (int b = 0; b < stride; b++)
+				_compose[a * stride + b] = RowOf(
+					Mul(ax, ay, az, _axisImages[b * 3]),
+					Mul(ax, ay, az, _axisImages[b * 3 + 1]),
+					Mul(ax, ay, az, _axisImages[b * 3 + 2]));
+		}
+	}
 
-    /// <summary>Row whose columns are the three given signed axis images.</summary>
-    private static byte RowOf(Vector3I cx, Vector3I cy, Vector3I cz)
-    {
-        for (int row = 0; row <= Count; row++)
-            if (_axisImages[row * 3] == cx && _axisImages[row * 3 + 1] == cy && _axisImages[row * 3 + 2] == cz)
-                return (byte)row;
-        return None; // unreachable: every signed axis permutation is in the table
-    }
+	/// <summary>Row whose columns are the three given signed axis images.</summary>
+	private static byte RowOf(Vector3I cx, Vector3I cy, Vector3I cz)
+	{
+		for (int row = 0; row <= Count; row++)
+			if (_axisImages[row * 3] == cx && _axisImages[row * 3 + 1] == cy && _axisImages[row * 3 + 2] == cz)
+				return (byte)row;
+		return None; // unreachable: every signed axis permutation is in the table
+	}
 
-    /// <summary>
-    /// Rows 25..255 are copies of the identity row. Storage is deliberately loose — SetBlock
-    /// takes any byte and the future no-memory sentinel is 255 — so the read path stays total
-    /// with no clamp and no branch: an out-of-range byte simply reads as no rotation. Only
-    /// <see cref="ToIndex"/> still reports -1 there, which is its documented "invalid" answer.
-    /// </summary>
-    private static void FillOutOfRangeRows()
-    {
-        for (int row = Count + 1; row < Bytes; row++)
-        {
-            _axisImages[row * 3] = _axisImages[None * 3];
-            _axisImages[row * 3 + 1] = _axisImages[None * 3 + 1];
-            _axisImages[row * 3 + 2] = _axisImages[None * 3 + 2];
-            _inverse[row] = None;
-            _toIndex[row] = -1;
-            for (int f = 0; f < 6; f++) _localFace[row * 6 + f] = (byte)f;
-            for (int c = 0; c < 8; c++) _localCorner[row * 8 + c] = (byte)c;
-        }
-    }
+	/// <summary>
+	/// Rows 25..255 are copies of the identity row. Storage is deliberately loose — SetBlock
+	/// takes any byte and the future no-memory sentinel is 255 — so the read path stays total
+	/// with no clamp and no branch: an out-of-range byte simply reads as no rotation. Only
+	/// <see cref="ToIndex"/> still reports -1 there, which is its documented "invalid" answer.
+	/// </summary>
+	private static void FillOutOfRangeRows()
+	{
+		for (int row = Count + 1; row < Bytes; row++)
+		{
+			_axisImages[row * 3] = _axisImages[None * 3];
+			_axisImages[row * 3 + 1] = _axisImages[None * 3 + 1];
+			_axisImages[row * 3 + 2] = _axisImages[None * 3 + 2];
+			_inverse[row] = None;
+			_toIndex[row] = -1;
+			for (int f = 0; f < 6; f++) _localFace[row * 6 + f] = (byte)f;
+			for (int c = 0; c < 8; c++) _localCorner[row * 8 + c] = (byte)c;
+		}
+	}
 
-    private static void BuildUvTable()
-    {
-        for (int o = 0; o < Bytes; o++)
-            for (int w = 0; w < 6; w++)
-                for (int corner = 0; corner < 8; corner++)
-                {
-                    int local = _localCorner[o * 8 + corner];
-                    _uv[(o * 6 + w) * 8 + corner] = ChunkMesher.TileUv(
-                        _localFace[o * 6 + w], local & 1, (local >> 1) & 1, (local >> 2) & 1);
-                }
-    }
+	private static void BuildUvTable()
+	{
+		for (int o = 0; o < Bytes; o++)
+			for (int w = 0; w < 6; w++)
+				for (int corner = 0; corner < 8; corner++)
+				{
+					int local = _localCorner[o * 8 + corner];
+					_uv[(o * 6 + w) * 8 + corner] = ChunkMesher.TileUv(
+						_localFace[o * 6 + w], local & 1, (local >> 1) & 1, (local >> 2) & 1);
+				}
+	}
 
-    private static Vector3I Unit(int axis)
-        => axis == 0 ? new Vector3I(1, 0, 0) : axis == 1 ? new Vector3I(0, 1, 0) : new Vector3I(0, 0, 1);
+	private static Vector3I Unit(int axis)
+		=> axis == 0 ? new Vector3I(1, 0, 0) : axis == 1 ? new Vector3I(0, 1, 0) : new Vector3I(0, 0, 1);
 
-    /// <summary>Matrix-vector product: v expressed in the basis whose columns are a, b, c.</summary>
-    private static Vector3I Mul(Vector3I a, Vector3I b, Vector3I c, Vector3I v)
-        => new(a.X * v.X + b.X * v.Y + c.X * v.Z,
-               a.Y * v.X + b.Y * v.Y + c.Y * v.Z,
-               a.Z * v.X + b.Z * v.Y + c.Z * v.Z);
+	/// <summary>Matrix-vector product: v expressed in the basis whose columns are a, b, c.</summary>
+	private static Vector3I Mul(Vector3I a, Vector3I b, Vector3I c, Vector3I v)
+		=> new(a.X * v.X + b.X * v.Y + c.X * v.Z,
+			   a.Y * v.X + b.Y * v.Y + c.Y * v.Z,
+			   a.Z * v.X + b.Z * v.Y + c.Z * v.Z);
 
-    private static int Dot(Vector3I a, Vector3I b) => a.X * b.X + a.Y * b.Y + a.Z * b.Z;
+	private static int Dot(Vector3I a, Vector3I b) => a.X * b.X + a.Y * b.Y + a.Z * b.Z;
 
-    private static Vector3I Cross(Vector3I a, Vector3I b)
-        => new(a.Y * b.Z - a.Z * b.Y, a.Z * b.X - a.X * b.Z, a.X * b.Y - a.Y * b.X);
+	private static Vector3I Cross(Vector3I a, Vector3I b)
+		=> new(a.Y * b.Z - a.Z * b.Y, a.Z * b.X - a.X * b.Z, a.X * b.Y - a.Y * b.X);
 
-    /// <summary>Face index of a signed unit vector (its only inputs are axis images).</summary>
-    private static int AxisOf(Vector3I v)
-        => v.X != 0 ? (v.X > 0 ? 0 : 1) : v.Y != 0 ? (v.Y > 0 ? 2 : 3) : (v.Z > 0 ? 4 : 5);
+	/// <summary>Face index of a signed unit vector (its only inputs are axis images).</summary>
+	private static int AxisOf(Vector3I v)
+		=> v.X != 0 ? (v.X > 0 ? 0 : 1) : v.Y != 0 ? (v.Y > 0 ? 2 : 3) : (v.Z > 0 ? 4 : 5);
 
-    /// <summary>Axis index 0/1/2 of a signed unit vector, for the corner bits.</summary>
-    private static int AxisIndex(Vector3I v) => v.X != 0 ? 0 : v.Y != 0 ? 1 : 2;
+	/// <summary>Axis index 0/1/2 of a signed unit vector, for the corner bits.</summary>
+	private static int AxisIndex(Vector3I v) => v.X != 0 ? 0 : v.Y != 0 ? 1 : 2;
 
-    private static bool SameRotation(byte a, byte b)
-        => _axisImages[a * 3] == _axisImages[b * 3]
-        && _axisImages[a * 3 + 1] == _axisImages[b * 3 + 1]
-        && _axisImages[a * 3 + 2] == _axisImages[b * 3 + 2];
+	private static bool SameRotation(byte a, byte b)
+		=> _axisImages[a * 3] == _axisImages[b * 3]
+		&& _axisImages[a * 3 + 1] == _axisImages[b * 3 + 1]
+		&& _axisImages[a * 3 + 2] == _axisImages[b * 3 + 2];
 
-    // ---- lookups ---------------------------------------------------------------------
+	// ---- lookups ---------------------------------------------------------------------
 
-    /// <summary>World image of local axis 0/1/2 (X/Y/Z). Identity returns the axis itself.</summary>
-    public static Vector3I ImageOfLocalAxis(byte orientation, int localAxis)
-        => _axisImages[orientation * 3 + localAxis];
+	/// <summary>World image of local axis 0/1/2 (X/Y/Z). Identity returns the axis itself.</summary>
+	public static Vector3I ImageOfLocalAxis(byte orientation, int localAxis)
+		=> _axisImages[orientation * 3 + localAxis];
 
-    /// <summary>The rotation that undoes <paramref name="orientation"/>.</summary>
-    public static byte Inverse(byte orientation) => _inverse[orientation];
+	/// <summary>The rotation that undoes <paramref name="orientation"/>.</summary>
+	public static byte Inverse(byte orientation) => _inverse[orientation];
 
-    /// <summary>Rotation about the local +Y axis by <paramref name="roll"/> quarter turns,
-    /// for a block placed on <paramref name="dirFace"/>. Table order: dirFace * 4 + roll.</summary>
-    public static byte Axis(int dirFace, int roll) => _byDirRoll[dirFace * 4 + roll];
+	/// <summary>Rotation about the local +Y axis by <paramref name="roll"/> quarter turns,
+	/// for a block placed on <paramref name="dirFace"/>. Table order: dirFace * 4 + roll.</summary>
+	public static byte Axis(int dirFace, int roll) => _byDirRoll[dirFace * 4 + roll];
 
-    /// <summary>
-    /// The rotation whose local +Z image is Dirs[frontDir] and local +Y image is Dirs[upDir].
-    /// Total: an out-of-range face collapses to PosX/Top, and a non-perpendicular upDir is
-    /// snapped to the lowest-index perpendicular face (so up "+X" means Top), never throwing.
-    /// </summary>
-    public static byte Face(int frontDir, int upDir)
-    {
-        if ((uint)frontDir > 5) frontDir = Regress.Face.PosX;
-        if ((uint)upDir > 5) upDir = Regress.Face.Top;
-        if ((frontDir >> 1) == (upDir >> 1)) upDir = _perpendicular[frontDir];
-        return _byUpFront[upDir * 6 + frontDir];
-    }
+	/// <summary>
+	/// The rotation whose local +Z image is Dirs[frontDir] and local +Y image is Dirs[upDir].
+	/// Total: an out-of-range face collapses to PosX/Top, and a non-perpendicular upDir is
+	/// snapped to the lowest-index perpendicular face (so up "+X" means Top), never throwing.
+	/// </summary>
+	public static byte Face(int frontDir, int upDir)
+	{
+		if ((uint)frontDir > 5) frontDir = Regress.Face.PosX;
+		if ((uint)upDir > 5) upDir = Regress.Face.Top;
+		if ((frontDir >> 1) == (upDir >> 1)) upDir = _perpendicular[frontDir];
+		return _byUpFront[upDir * 6 + frontDir];
+	}
 
-    /// <summary>The local face whose outward normal maps to Dirs[worldFace]. Identity keeps it.</summary>
-    public static int LocalFace(byte orientation, int worldFace) => _localFace[orientation * 6 + worldFace];
+	/// <summary>The local face whose outward normal maps to Dirs[worldFace]. Identity keeps it.</summary>
+	public static int LocalFace(byte orientation, int worldFace) => _localFace[orientation * 6 + worldFace];
 
-    /// <summary>
-    /// The local corner of the world corner, both packed as x | (y &lt;&lt; 1) | (z &lt;&lt; 2).
-    /// Exact integer math; identity maps a corner to itself.
-    /// </summary>
-    public static int LocalCorner(byte orientation, int x, int y, int z)
-        => _localCorner[orientation * 8 + (x | (y << 1) | (z << 2))];
+	/// <summary>
+	/// The local corner of the world corner, both packed as x | (y &lt;&lt; 1) | (z &lt;&lt; 2).
+	/// Exact integer math; identity maps a corner to itself.
+	/// </summary>
+	public static int LocalCorner(byte orientation, int x, int y, int z)
+		=> _localCorner[orientation * 8 + (x | (y << 1) | (z << 2))];
 
-    /// <summary>
-    /// The tile-local UV of the world corner (x, y, z) on Dirs[worldFace]'s face, after the
-    /// block's rotation: the corner is mapped to its LOCAL corner and the LOCAL face's identity
-    /// UV is evaluated there. So the rotation moves the tile choice and the in-face UVs together
-    /// and art is authored along the block's own up direction. For <see cref="None"/> the entries
-    /// are the mesher's per-face UV untouched, by construction; an out-of-range byte reads the
-    /// identity too, like every other byte-indexed lookup.
-    /// </summary>
-    public static Vector2 Uv(byte orientation, int worldFace, int x, int y, int z)
-        => _uv[(orientation * 6 + worldFace) * 8 + (x | (y << 1) | (z << 2))];
+	/// <summary>
+	/// The tile-local UV of the world corner (x, y, z) on Dirs[worldFace]'s face, after the
+	/// block's rotation: the corner is mapped to its LOCAL corner and the LOCAL face's identity
+	/// UV is evaluated there. So the rotation moves the tile choice and the in-face UVs together
+	/// and art is authored along the block's own up direction. For <see cref="None"/> the entries
+	/// are the mesher's per-face UV untouched, by construction; an out-of-range byte reads the
+	/// identity too, like every other byte-indexed lookup.
+	/// </summary>
+	public static Vector2 Uv(byte orientation, int worldFace, int x, int y, int z)
+		=> _uv[(orientation * 6 + worldFace) * 8 + (x | (y << 1) | (z << 2))];
 
-    /// <summary>Table row 0..23 for a valid orientation; None maps to the identity row, invalid to -1.</summary>
-    public static int ToIndex(byte orientation) => _toIndex[orientation];
+	/// <summary>Table row 0..23 for a valid orientation; None maps to the identity row, invalid to -1.</summary>
+	public static int ToIndex(byte orientation) => _toIndex[orientation];
 
-    /// <summary>True for None and the 24 table orientations.</summary>
-    public static bool IsValid(byte orientation) => orientation <= Count;
+	/// <summary>True for None and the 24 table orientations.</summary>
+	public static bool IsValid(byte orientation) => orientation <= Count;
 
-    /// <summary>
-    /// The rotation "b first, then a", so Compose(Axis(Top, 1), current) is one more turn
-    /// about the local +Y axis. Total: an out-of-range row composes as the identity.
-    /// </summary>
-    public static byte Compose(byte a, byte b)
-    {
-        if (a > Count) a = None;
-        if (b > Count) b = None;
-        return _compose[a * (Count + 1) + b];
-    }
+	/// <summary>
+	/// The rotation "b first, then a", so Compose(Axis(Top, 1), current) is one more turn
+	/// about the local +Y axis. Total: an out-of-range row composes as the identity.
+	/// </summary>
+	public static byte Compose(byte a, byte b)
+	{
+		if (a > Count) a = None;
+		if (b > Count) b = None;
+		return _compose[a * (Count + 1) + b];
+	}
 
-    /// <summary>
-    /// The model-layer 24-step cycle over the canonical space {None} u ({1..24} minus the
-    /// duplicate identity byte 9): 0..8, 10..24, then back to 0. Total: byte 9 steps on as the
-    /// identity and an out-of-range value wraps to the start.
-    /// </summary>
-    public static byte Next(byte current)
-    {
-        if (current == None) return 1;
-        if (current >= Count) return None;
-        byte next = (byte)(current + 1);
-        return next == IdentityDuplicate ? (byte)(next + 1) : next;
-    }
+	/// <summary>
+	/// The model-layer 24-step cycle over the canonical space {None} u ({1..24} minus the
+	/// duplicate identity byte 9): 0..8, 10..24, then back to 0. Total: byte 9 steps on as the
+	/// identity and an out-of-range value wraps to the start.
+	/// </summary>
+	public static byte Next(byte current)
+	{
+		if (current == None) return 1;
+		if (current >= Count) return None;
+		byte next = (byte)(current + 1);
+		return next == IdentityDuplicate ? (byte)(next + 1) : next;
+	}
 }

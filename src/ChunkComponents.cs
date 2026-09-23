@@ -9,36 +9,36 @@ namespace Regress;
 /// </summary>
 public struct ChunkCoord : IComponent
 {
-    public int X, Y, Z;
+	public int X, Y, Z;
 
-    public ChunkCoord(int x, int y, int z) { X = x; Y = y; Z = z; }
+	public ChunkCoord(int x, int y, int z) { X = x; Y = y; Z = z; }
 
-    public static ChunkCoord Of(Vector3I c) => new(c.X, c.Y, c.Z);
-    public Vector3I Vector => new(X, Y, Z);
+	public static ChunkCoord Of(Vector3I c) => new(c.X, c.Y, c.Z);
+	public Vector3I Vector => new(X, Y, Z);
 
-    /// <summary>Chebyshev distance in chunk space.</summary>
-    public int MaxDistanceTo(ChunkCoord other)
-        => Mathf.Max(Mathf.Abs(X - other.X), Mathf.Max(Mathf.Abs(Y - other.Y), Mathf.Abs(Z - other.Z)));
+	/// <summary>Chebyshev distance in chunk space.</summary>
+	public int MaxDistanceTo(ChunkCoord other)
+		=> Mathf.Max(Mathf.Abs(X - other.X), Mathf.Max(Mathf.Abs(Y - other.Y), Mathf.Abs(Z - other.Z)));
 
-    public override string ToString() => $"({X},{Y},{Z})";
+	public override string ToString() => $"({X},{Y},{Z})";
 }
 
 /// <summary>Voxel payload of a chunk: two 4096-byte arrays, index = (y * 16 + z) * 16 + x.
 /// Every block carries an orientation; byte 0 (<see cref="Orientation.None"/>) is no rotation.</summary>
 public struct ChunkBlocks : IComponent
 {
-    public byte[] Value;
-    public byte[] Orientation;
+	public byte[] Value;
+	public byte[] Orientation;
 
-    public static int Index(int x, int y, int z) => (y * 16 + z) * 16 + x;
+	public static int Index(int x, int y, int z) => (y * 16 + z) * 16 + x;
 }
 
 /// <summary>Godot nodes backing a chunk. Nodes are created lazily on first mesh.</summary>
 public struct ChunkVisual : IComponent
 {
-    public MeshInstance3D Mesh;
-    public StaticBody3D Body;
-    public CollisionShape3D Shape;
+	public MeshInstance3D Mesh;
+	public StaticBody3D Body;
+	public CollisionShape3D Shape;
 }
 
 // ---- tags: the archetype an entity sits in *is* its lifecycle state ----------
