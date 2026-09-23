@@ -34,7 +34,7 @@ public static class TexPack
 
 	/// <summary>The ten renderable blocks in cell order; cell index = block*6 + face.</summary>
 	public static readonly Block[] Renderable =
-		{ Block.Stone, Block.Dirt, Block.Grass, Block.Sand, Block.Wood, Block.Plank, Block.Leaves, Block.Bedrock, Block.Chest, Block.Pumpkin };
+		{ Block.Stone, Block.Dirt, Block.Grass, Block.Sand, Block.Wood, Block.Plank, Block.Leaves, Block.Bedrock, Block.Chest, Block.Pumpkin, Block.Heartwood };
 
 	/// <summary>Face-constant suffixes in Face index order (PosX=0 … NegZ=5).</summary>
 	public static readonly string[] FaceSuffix = { "posx", "negx", "top", "bottom", "posz", "negz" };
@@ -121,6 +121,7 @@ public static class TexPack
 		// Pumpkin (ordinal 9): frozen fallback is sand (5) — the warmest/lightest of the 12 keys,
 		// closest in hue to pumpkin orange; its art ships as the six pumpkin_* overrides.
 		5, 5, 5, 5, 5, 5,
+		7, 7, 7, 7, 7, 7,  // Heartwood
 	};
 
 	/// <summary>The last accepted pack's resolution; the frozen fallback until one loads.</summary>
