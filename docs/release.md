@@ -126,6 +126,14 @@ A minimal `~/.config/godot/editor_settings-4.tres` (and `editor_settings-4.7.tre
 `keytool -printcert -jarfile build/android/Regress.apk` and
 `apksigner verify --print-certs build/android/Regress.apk`.
 
+The release APK is signed with the same throwaway CI keystore, injected through
+`GODOT_ANDROID_KEYSTORE_RELEASE_PATH` / `_USER` / `_PASSWORD` because `sign_apk()`'s release
+branch reads only `keystore/release` or those env vars and never falls back to the debug keystore
+(`platform/android/export/export_plugin.cpp` @ `4.7.2-stable` lines 1761-1767 and 3333-3349; env
+names in `export_plugin.h:50-52`). `preset.3` keeps `keystore/release` empty. It is not a
+production signing key; the evidence is `keytool -printcert -jarfile` /
+`apksigner verify --print-certs` in the job log.
+
 Gradle builds were evaluated and deliberately not used: they would require installing the
 Android build template (`ExportTemplateManager::get_android_build_directory` →
 `res://android/build` unless `gradle_build/gradle_build_directory` is set; source
@@ -156,6 +164,12 @@ xcodebuild -project <found.xcodeproj> -scheme <first scheme> -sdk iphoneos -conf
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
   -derivedDataPath /tmp/iosdd build
 ```
+
+macOS `--import` hung twice with no progress (the same import takes ~3 seconds on the ubuntu
+job), so the apple job now resolves the editor binary explicitly (`GODOT_BIN` from the extracted
+`Godot_mono.app`, no symlink) and runs the import under a 300-second watchdog that prints
+`ps -ef`, the import log and Godot's own log before failing. Root cause still unknown; the next
+run provides the evidence.
 
 The workflow prints the actual `build/ios` shape before packaging and zips whatever exists
 (project directory if the export produced one, otherwise the export tree). `lipo` evidence is

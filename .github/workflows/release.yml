@@ -146,6 +146,13 @@ jobs:
           echo "--- editor settings ---"
           cat "$SETTINGS_DIR/editor_settings-4.tres"
           echo "ANDROID_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
+          # Release APKs are signed with the same throwaway CI keystore: sign_apk()'s release
+          # branch reads only keystore/release or GODOT_ANDROID_KEYSTORE_RELEASE_* and never
+          # falls back to the debug keystore (export_plugin.cpp:1761-1767, 3333-3349).
+          # preset.3 keeps keystore/release empty; the env vars inject this path.
+          echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$KEYSTORE" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_RELEASE_USER=androiddebugkey" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=android" >> "$GITHUB_ENV"
 
       - name: Export Linux, Windows and Android
         run: |
@@ -252,16 +259,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOME/godot"
-          if [ ! -x "$HOME/godot/godot" ]; then
+          GODOT_BIN=$(find "$HOME/godot" -maxdepth 5 -type f -path '*/Contents/MacOS/Godot' -print -quit)
+          if [ -z "$GODOT_BIN" ]; then
             URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_STATUS}/Godot_v${GODOT_VERSION}-${GODOT_STATUS}_mono_macos.universal.zip"
             curl -fL --retry 3 -o /tmp/godot.zip "$URL"
             unzip -q -o /tmp/godot.zip -d "$HOME/godot"
             ls -R "$HOME/godot" | head -40 || true
-            BIN=$(find "$HOME/godot" -maxdepth 5 -type f -path '*/Contents/MacOS/Godot' -print -quit)
-            test -n "$BIN"
-            chmod +x "$BIN"
-            ln -sf "$BIN" "$HOME/godot/godot"
+            GODOT_BIN=$(find "$HOME/godot" -maxdepth 5 -type f -path '*/Contents/MacOS/Godot' -print -quit)
           fi
+          test -n "$GODOT_BIN"
+          chmod +x "$GODOT_BIN"
+          echo "GODOT_BIN=$GODOT_BIN" >> "$GITHUB_ENV"
           TPL_DIR="$HOME/Library/Application Support/Godot/export_templates/${GODOT_TEMPLATE_VERSION}"
           if [ ! -f "$TPL_DIR/macos.zip" ]; then
             URL="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_STATUS}/Godot_v${GODOT_VERSION}-${GODOT_STATUS}_mono_export_templates.tpz"
@@ -271,7 +279,7 @@ jobs:
             mkdir -p "$TPL_DIR"
             mv /tmp/templates/templates/* "$TPL_DIR/"
           fi
-          "$HOME/godot/godot" --version
+          "$GODOT_BIN" --version
           echo "--- export templates ---"
           ls -l "$TPL_DIR"
           test -f "$TPL_DIR/macos.zip"
@@ -287,14 +295,27 @@ jobs:
 
       - name: Import project
         run: |
-          "$HOME/godot/godot" --headless --path . --import
+          set -euo pipefail
+          "$GODOT_BIN" --headless --verbose --path . --import > /tmp/import.log 2>&1 &
+          PID=$!
+          for i in $(seq 1 60); do kill -0 "$PID" 2>/dev/null || break; sleep 5; done
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "IMPORT TIMEOUT after 300s"
+            ps -ef | head -40
+            echo "--- import.log tail ---"; tail -n 80 /tmp/import.log || true
+            echo "--- editor log tail ---"; tail -n 80 "$HOME/Library/Application Support/Godot/logs/godot.log" 2>/dev/null || true
+            kill -9 "$PID" 2>/dev/null || true
+            exit 1
+          fi
+          wait "$PID" || { echo "IMPORT FAILED"; tail -n 80 /tmp/import.log; exit 1; }
+          tail -n 20 /tmp/import.log
 
       - name: Export macOS and iOS
         run: |
           set -euo pipefail
           mkdir -p build/macos build/ios
-          "$HOME/godot/godot" --headless --path . --export-release "macOS" build/macos/Regress.zip
-          "$HOME/godot/godot" --headless --path . --export-release "iOS" build/ios/Regress.ipa
+          "$GODOT_BIN" --headless --path . --export-release "macOS" build/macos/Regress.zip
+          "$GODOT_BIN" --headless --path . --export-release "iOS" build/ios/Regress.ipa
           echo "--- build/macos ---"
           ls -l build/macos
           echo "--- build/ios shape ---"
