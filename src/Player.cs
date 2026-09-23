@@ -47,7 +47,7 @@ public partial class Player : CharacterBody3D
 			default(PlayerMining),
 			Tags.Get<PlayerTag>());
 
-		SetMouseCaptured(true);
+		if (!TouchControls.Active) SetMouseCaptured(true);
 	}
 
 	private void SetMouseCaptured(bool captured)
@@ -56,6 +56,7 @@ public partial class Player : CharacterBody3D
 	public override void _UnhandledInput(InputEvent @event)
 	{
 		if (Self.IsNull) return;
+		if (TouchControls.Active && @event is InputEventMouse) return; // touch drives look/place; the emulated mouse must not double-handle it
 		ref var state = ref Self.GetComponent<PlayerState>();
 		ref var intent = ref Self.GetComponent<PlayerIntent>();
 
