@@ -93,7 +93,7 @@ Carried from [architecture.md](architecture.md#known-weaknesses):
 - The mesher allocates ~430 KB per chunk; a two-pass count-then-fill mesh would remove it.
 - No persistence: player-built chunks are pinned in memory rather than written to disk, so the
   world resets between sessions.
-- **App icon**: iOS currently uses a placeholder game tile and Android keeps the engine default launcher icon. Both need a real 1024×1024 icon from the user before release.
+- **App icon**: iOS currently uses a placeholder game tile and Android keeps the engine default launcher icon. Both need a real 1024×1024 icon from the user before release. A first-pass, repo-generated 1024×1024 icon now ships (`tools/gen_app_icon.py` → `assets/icon_1024x1024.png`, plus native 192×192 / 432×432 Android renders, wired into the iOS and Android presets) and remains user-replaceable.
 
 ### 5. `WorldRules` settings UI
 

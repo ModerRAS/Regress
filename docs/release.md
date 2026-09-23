@@ -98,14 +98,18 @@ project setting `application/config/icon` (line 287) → otherwise `Invalid icon
 preset keys are registered in `editor/export/editor_export_platform_apple_embedded.cpp`
 @ `4.7.2-stable` lines 371-373.
 
-Placeholder: `preset.4` uses
-`icons/icon_1024x1024="res://texturepacks/default/tiles/grass_top.png"` (a 16×16 game tile)
-with `application/icon_interpolation=0` (Nearest neighbor) to keep the pixel-art look when scaled
-to 1024. `application/icon_interpolation` is a registered preset key, not a project setting
-(`editor/export/editor_export_platform_apple_embedded.cpp` @ `4.7.2-stable` line 282 registers
-the enum with default 4; it is read at lines 294, 300 and 318), so it stays in `preset.4`. This
-is **not a real icon**; before a public release it must be replaced with a proper 1024×1024
-icon. `_dark`/`_tinted` stay empty (the source above skips them).
+`preset.4` now sets `icons/icon_1024x1024="res://assets/icon_1024x1024.png"` — a **first-pass,
+repo-generated** icon produced by `tools/gen_app_icon.py` (Python 3 stdlib only, no Pillow or
+numpy; deterministic, byte-identical across runs). The script paints one 64×64 voxel model
+straight from the repo's own `texturepacks/default/tiles/*.png` pixels, so every output pixel is a
+tile colour and the icon carries no anti-aliasing and no gradients. `application/icon_interpolation=0`
+(Nearest neighbor) is kept for the pixel-art look. `application/icon_interpolation` is a registered
+preset key, not a project setting (`editor/export/editor_export_platform_apple_embedded.cpp`
+@ `4.7.2-stable` line 282 registers the enum with default 4; it is read at lines 294, 300 and
+318), so it stays in `preset.4`. `_dark`/`_tinted` stay empty (the source above skips them).
+`application/app_store_team_id="XXXXXXXXXX"` is still a placeholder, and the unsigned /
+`application/export_project_only=true` ceilings are unchanged — this icon is a replaceable
+first pass, not the final artwork.
 
 ## macOS editor bundle name (measured in CI)
 
@@ -226,10 +230,17 @@ non-gradle route passes, so nothing extra is installed or committed.
 Artifacts (bundle `Regress-desktop-android`): `Regress-linux-x86_64.zip`,
 `Regress-windows-x86_64.zip`, `Regress-android.apk`.
 
-Android launcher icon: `preset.3` has no `launcher_icons/*` keys and the export still succeeds,
-so the APK carries the engine's default launcher icon. This is an appearance gap and a pending
-user decision (engine default vs. a brand icon), not a blocker; it is tracked in
-[roadmap.md](roadmap.md).
+Android launcher icon: `preset.3` now sets `launcher_icons/main_192x192` →
+`assets/icon_192x192.png` and `launcher_icons/adaptive_foreground_432x432` →
+`assets/icon_432x432.png`, both rendered at their native sizes by `tools/gen_app_icon.py`, so
+there is no engine-side Lanczos resize. The adaptive foreground is required, not optional: the
+non-gradle APK keeps the export template's `res/mipmap-anydpi-v26/icon.xml` and its default
+`icon_background` drawable, and API 26+ launchers prefer that adaptive icon over
+`mipmap-*/icon.webp`, so `main_192x192` alone would not change what users see on modern devices.
+`launcher_icons/adaptive_background_432x432` and `launcher_icons/adaptive_monochrome_432x432`
+stay empty: the foreground is fully opaque so the template's default background is never visible
+behind it, and Godot only rewrites `icon.xml` when monochrome is set. Both icons are a
+user-replaceable first pass; tracked in [roadmap.md](roadmap.md).
 
 ### `apple` (macos-latest)
 
