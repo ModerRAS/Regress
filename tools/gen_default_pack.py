@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Generate the twelve base 16x16 RGBA8 tiles plus the six chest override tiles of the
-bundled default texture pack.
+"""Generate the twelve base 16x16 RGBA8 tiles plus the chest, pumpkin and heartwood override
+tiles of the bundled default texture pack.
 
 Python 3 standard library only (zlib/struct/hashlib/os/math/argparse) -- no Pillow, no numpy.
 Output bytes are deterministic: re-running the generator reproduces identical files.
@@ -19,6 +19,8 @@ Chest overrides (Phase B) == vocabulary cells 48..53 -> no-variant baseline laye
 chest_posx, chest_negx, chest_top, chest_bottom, chest_posz, chest_negz.
 Pumpkin overrides (Phase C) == vocabulary cells 54..59 -> no-variant baseline layer 66..71:
 pumpkin_posx, pumpkin_negx, pumpkin_top, pumpkin_bottom, pumpkin_posz, pumpkin_negz.
+Heartwood overrides (Phase D) == vocabulary cells 60..65 -> no-variant baseline layer 72..77:
+heartwood_posx, heartwood_negx, heartwood_top, heartwood_bottom, heartwood_posz, heartwood_negz.
 """
 
 import argparse
@@ -42,6 +44,8 @@ KEY_ORDER = [
 OVERRIDE_KEYS = [
     "chest_posx", "chest_negx", "chest_top", "chest_bottom", "chest_posz", "chest_negz",
     "pumpkin_posx", "pumpkin_negx", "pumpkin_top", "pumpkin_bottom", "pumpkin_posz", "pumpkin_negz",
+    "heartwood_posx", "heartwood_negx", "heartwood_top", "heartwood_bottom",
+    "heartwood_posz", "heartwood_negz",
 ]
 ALL_KEYS = KEY_ORDER + OVERRIDE_KEYS
 SIZE = 16
@@ -505,6 +509,84 @@ def tile_pumpkin_bottom():
     return px
 
 
+# ---------------------------------------------------------------- the six heartwood overrides
+
+# Cut cross-section palette: pale pith, red-brown rings, near-black sawn rim. Every tone is
+# clearly darker AND redder than both existing wood tiles (wood_side bark 110.9/79.7/45.7,
+# wood_top end-grain 89.8/64.4/37.1) -- a trunk's wood_top shell ring and the heartwood core
+# behind it are on screen at the same time when the trunk is cut, so they must not read alike.
+HEARTWOOD_PITH = (198, 156, 116)   # sRGB ~0.78/0.61/0.45: pale pith at the cut centre
+HEARTWOOD_RING = (122, 58, 38)     # sRGB ~0.48/0.23/0.15: lit red-brown ring
+HEARTWOOD_BAND = (72, 29, 20)      # sRGB ~0.28/0.11/0.08: dark ring band
+HEARTWOOD_DEEP = (46, 18, 13)      # sRGB ~0.18/0.07/0.05: deepest ring band
+HEARTWOOD_CRUST = (24, 9, 7)       # sRGB ~0.09/0.04/0.03: near-black sawn rim
+
+# Ring bands as (r2max, tone), ordered outward from the cut centre. `r2 = dx*dx + dy*dy` is an
+# integer in half-cell units (cell i's centre sits at 2*i-15, so the tile centre is exactly
+# (7.5,7.5) and the four compass cells (8,2),(8,13),(2,8),(13,8) are all exactly r2 = 122).
+# Integer thresholds only: no sqrt, no float geometry. [100,146) is a wide dark band so the
+# +-7 noise warp can never push a compass cell out of it.
+HEARTWOOD_BANDS = (
+    (30, HEARTWOOD_PITH),
+    (70, HEARTWOOD_RING),
+    (100, HEARTWOOD_BAND),
+    (146, HEARTWOOD_DEEP),
+    (190, HEARTWOOD_RING),
+    (250, HEARTWOOD_DEEP),
+    (320, HEARTWOOD_RING),
+    (1 << 30, HEARTWOOD_DEEP),
+)
+
+
+def _heartwood_cut(px, seed):
+    """One cut cross-section, reseeded per face: concentric rings around a pale pith with a
+    near-black sawn rim, so the four corners come out near black. The same value noise the other
+    tiles use wobbles each ring bucketing -- the `_pumpkin_ribs` recipe, ring-shaped."""
+    for y in range(SIZE):
+        for x in range(SIZE):
+            dy, dx = 2 * y - 15, 2 * x - 15
+            r2 = dx * dx + dy * dy + int((pnoise(x, y, 4, 4, seed) - 0.5) * 16.0)
+            tone = HEARTWOOD_DEEP
+            for r2max, t in HEARTWOOD_BANDS:
+                if r2 < r2max:
+                    tone = t
+                    break
+            if x == 0 or y == 0 or x == SIZE - 1 or y == SIZE - 1:
+                tone = HEARTWOOD_CRUST       # sawn rim, and so a near-black corner every face
+            px[y][x] = mul(tone, 0.94 + 0.12 * rnd(x, y, seed + 1)) + (255,)
+    return px
+
+
+def tile_heartwood_posx():
+    """Right face of the heartwood core: cut cross-section, reseeded."""
+    return _heartwood_cut(grid(), 2301)
+
+
+def tile_heartwood_negx():
+    """Left face of the heartwood core: cut cross-section, reseeded."""
+    return _heartwood_cut(grid(), 2401)
+
+
+def tile_heartwood_top():
+    """Top face of the heartwood core: cut cross-section, reseeded."""
+    return _heartwood_cut(grid(), 2501)
+
+
+def tile_heartwood_bottom():
+    """Bottom face of the heartwood core: cut cross-section, reseeded."""
+    return _heartwood_cut(grid(), 2601)
+
+
+def tile_heartwood_posz():
+    """Front face of the heartwood core: cut cross-section, reseeded."""
+    return _heartwood_cut(grid(), 2701)
+
+
+def tile_heartwood_negz():
+    """Back face of the heartwood core: cut cross-section, reseeded."""
+    return _heartwood_cut(grid(), 2801)
+
+
 TILES = {
     "stone": tile_stone,
     "dirt": tile_dirt,
@@ -530,6 +612,12 @@ TILES = {
     "pumpkin_bottom": tile_pumpkin_bottom,
     "pumpkin_posz": tile_pumpkin_posz,
     "pumpkin_negz": tile_pumpkin_negz,
+    "heartwood_posx": tile_heartwood_posx,
+    "heartwood_negx": tile_heartwood_negx,
+    "heartwood_top": tile_heartwood_top,
+    "heartwood_bottom": tile_heartwood_bottom,
+    "heartwood_posz": tile_heartwood_posz,
+    "heartwood_negz": tile_heartwood_negz,
 }
 
 
@@ -635,6 +723,33 @@ def _pumpkin_face_motif(rows):
             and all(dark(rows[y][x]) for y in (10, 11, 12) for x in range(5, 11)))
 
 
+def _heartwood_ring_motif(rows):
+    """Cut-cross-section signature, coordinates not average colour: a pale pith pixel at the
+    centre cell (8,8), a dark ring-band pixel at all four compass cells (8,2),(8,13),(2,8),
+    (13,8) and a near-black crust pixel at all four corners. Coordinate bounds, not means: bark
+    and end-grain tiles cannot satisfy a pale centre and black corners at once."""
+    def pale(px):
+        return px[0] >= 150 and px[1] >= 110 and px[2] >= 80
+
+    def band(px):
+        return px[0] <= 95 and px[1] <= 60 and px[2] <= 45
+
+    def crust(px):
+        return px[0] <= 45 and px[1] <= 30 and px[2] <= 25
+
+    return (pale(rows[8][8])
+            and all(band(rows[y][x]) for y, x in ((8, 2), (8, 13), (2, 8), (13, 8)))
+            and all(crust(rows[y][x]) for y, x in ((0, 0), (15, 0), (0, 15), (15, 15))))
+
+
+def _heartwood_delta_fraction(rows, ref_rows):
+    """Fraction of the 256 coordinates whose max-channel delta against the SAME coordinate of
+    another tile is >= 16: the cut wood must differ pixel for pixel, not merely on the mean."""
+    hits = sum(1 for y in range(SIZE) for x in range(SIZE)
+               if _delta(rows[y][x], ref_rows[y][x]) >= 16)
+    return hits / float(SIZE * SIZE)
+
+
 def do_verify():
     ok = True
     # The latch belongs to the player-facing face only (local +Z == chest_posz).
@@ -698,6 +813,39 @@ def do_verify():
         ok = False
     else:
         print("pumpkin face motif: ok (pumpkin_posz present, other five absent)")
+    # Heartwood is only ever seen as a cut cross-section: all six faces must show the pale pith,
+    # the dark ring band and the near-black rim (at coordinates, not on average), and must read
+    # differently from both existing wood tiles at the very same coordinates.
+    hw_bad, hw_fracs = [], []
+    hw_refs = {}
+    for ref in ("wood_side", "wood_top"):
+        try:
+            hw_refs[ref] = read_png(tile_path(ref))["rows"]
+        except Exception as exc:
+            hw_bad.append("%s unreadable (%s)" % (ref, exc))
+    for key in [k for k in ALL_KEYS if k.startswith("heartwood_")]:
+        try:
+            rows = read_png(tile_path(key))["rows"]
+        except Exception:
+            hw_bad.append("%s missing" % key)
+            continue
+        if not _heartwood_ring_motif(rows):
+            hw_bad.append("%s ring signature missing (want pale pith at (8,8), dark bands at "
+                          "(8,2),(8,13),(2,8),(13,8), near-black corners)" % key)
+        for ref, ref_rows in hw_refs.items():
+            frac = _heartwood_delta_fraction(rows, ref_rows)
+            hw_fracs.append(frac)
+            if frac < 0.5:
+                hw_bad.append("%s differs from %s on only %.3f of the 256 coordinates "
+                              "(need >= 0.500)" % (key, ref, frac))
+    if hw_bad:
+        for line in hw_bad:
+            print("FAIL heartwood art: " + line)
+        ok = False
+    else:
+        print("heartwood rings: ok (pale pith + dark compass bands + near-black rim on all six "
+              "cut faces; min per-coordinate delta vs wood_side/wood_top = %.3f >= 0.500)"
+              % min(hw_fracs or [0.0]))
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

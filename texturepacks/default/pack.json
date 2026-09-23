@@ -26,6 +26,12 @@
     "pumpkin_top": "tiles/pumpkin_top.png",
     "pumpkin_bottom": "tiles/pumpkin_bottom.png",
     "pumpkin_posz": "tiles/pumpkin_posz.png",
-    "pumpkin_negz": "tiles/pumpkin_negz.png"
+    "pumpkin_negz": "tiles/pumpkin_negz.png",
+    "heartwood_posx": "tiles/heartwood_posx.png",
+    "heartwood_negx": "tiles/heartwood_negx.png",
+    "heartwood_top": "tiles/heartwood_top.png",
+    "heartwood_bottom": "tiles/heartwood_bottom.png",
+    "heartwood_posz": "tiles/heartwood_posz.png",
+    "heartwood_negz": "tiles/heartwood_negz.png"
   }
 }

@@ -180,6 +180,12 @@ public sealed class TerrainGenerator
 	/// <summary>Trunk footprint around an anchor: -TrunkHalfWidth .. TrunkHalfWidth-1.</summary>
 	private static bool InFootprint(int offset) => offset >= -TrunkHalfWidth && offset < TrunkHalfWidth;
 
+	/// <summary>Trunk voxel at an anchor-relative offset: the 1-voxel shell ring is bark
+	/// (Wood) and the 2x2 core is Heartwood.</summary>
+	private static Block TrunkBlock(int ox, int oz) =>
+		ox == -TrunkHalfWidth || ox == TrunkHalfWidth - 1 || oz == -TrunkHalfWidth || oz == TrunkHalfWidth - 1
+			? Block.Wood : Block.Heartwood;
+
 	/// <summary>True when canopy layer dy places a leaf at (dx, dz) relative to the anchor:
 	/// inside the layer radius, not on a cut corner of a wide layer, and not in the trunk
 	/// hollow. The one definition of the canopy shape, shared by StampTree, Contains and
@@ -229,7 +235,7 @@ public sealed class TerrainGenerator
 		for (int y = spec.MinY; y <= top; y++)
 			for (int ox = -TrunkHalfWidth; ox < TrunkHalfWidth; ox++)
 				for (int oz = -TrunkHalfWidth; oz < TrunkHalfWidth; oz++)
-					Put(blocks, coord, spec.AnchorX + ox, y, spec.AnchorZ + oz, Block.Wood, false);
+					Put(blocks, coord, spec.AnchorX + ox, y, spec.AnchorZ + oz, TrunkBlock(ox, oz), false);
 
 		for (int dy = CanopyBottomDy; dy <= CanopyTopDy; dy++)
 		{
