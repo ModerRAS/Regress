@@ -13,8 +13,12 @@ Scope: a touch adapter that feeds the existing input contract. Nothing else.
 ## 2. Input contract
 
 The full set of fields touch drives. Line numbers cite `master@ba8e162` — `src/PlayerSystems.cs`
-independently verified by worker-48, `src/Player.cs` by worker-49. The `feat/scale-64` merge
-will shift `PlayerSystems.cs`/`Game.cs` lines, so phase 2 re-pins them before editing.
+independently verified by worker-48, `src/Player.cs` by worker-49.
+
+**Phase 2's first action is to re-pin these line numbers.** After `feat/scale-64` merges, re-run
+the greps against the merged master for `src/PlayerSystems.cs` / `src/Game.cs` / `src/Blocks.cs`
+and update this table **before any `src/**` edit** — the scale-64 merge shifts
+`PlayerSystems.cs` and `Game.cs` lines.
 
 | Field | Def | Writer | Consumer |
 |---|---|---|---|
@@ -71,7 +75,9 @@ a consumer reads is listed above, so nothing else is needed.
   used by `RequestPlaceAtCrosshair` (`:406-424`).
 - Buttons: Jump (= `Up` while flying; both read the same key today,
   `src/PlayerSystems.cs:110-111`), Down, Fly toggle, hotbar row of `Blocks.Palette.Length`
-  buttons (`src/Blocks.cs:40-44`, 9 entries), Q/E rotate.
+  buttons (`src/Blocks.cs:40-44`, 9 entries), Q/E rotate. **No** Sprint, Creative or Respawn
+  button (rulings in §8). If sprint is ever wanted, the upgrade path is a forward-direction
+  double-tap on the stick — zero extra HUD space; do not add a button first.
 
 ## 4. HUD plan
 
@@ -81,6 +87,10 @@ a consumer reads is listed above, so nothing else is needed.
   `DrawCircle` — no textures, no assets), `HBoxContainer` of hotbar `Button`s,
   Jump / Down / Fly / rotate buttons.
 - Hidden on desktop because the node is never created: zero cost, nothing to hide.
+- The layout assumes landscape. That is already handled outside this branch: `project.godot`
+  carries `window/handheld/orientation=4` (sensor-landscape) in lead-20's
+  `feat/release-5platform` worktree (`Regress-rel5`, uncommitted as of 2026-09-23). This
+  branch does not touch `project.godot`.
 
 ## 5. Adapter design + traps
 
@@ -102,8 +112,11 @@ a consumer reads is listed above, so nothing else is needed.
 `--touchtest` scenario, new `src/TouchTest.cs`:
 
 - `ProcessPriority = 1` so it runs after `Game._Process` (`src/Game.cs:100-119`).
-- Frame-scripted, `Viewport.PushInput` injection at real node rects, no wall-clock
-  assertions.
+- Frame-scripted injection at real node rects, no wall-clock assertions.
+- **Phase-2 gate — resolve before writing the scenario:** confirm that headless
+  `Viewport.PushInput` reaches `Control._GuiInput`. If it does not, use the fallback
+  `Input.ParseInputEvent`. Record the outcome here and in the phase-2 report:
+  `injection: <PushInput|ParseInputEvent> (<why>)`. Neither is established until run.
 - Checks: `hud` / `stick` / `stick-release` / `drag-yaw` / `tap-place` / `hold-mine`
   (+ real block break in Creative) / `jump` / `fly` / `hotbar` / `classify` (pure
   function).
@@ -120,7 +133,9 @@ a consumer reads is listed above, so nothing else is needed.
   (a release can never be a hold, so it is always a Tap), 0 for the hold check (fires next
   frame). No wall-clock assertion anywhere. Justification: holding past `HoldMs` *is* the
   tap boundary, so a second threshold would be dead configuration.
-- Mutation proof list, with the FAIL lines recorded:
+- Mutation proof list. Each mutation must be run and its **raw `scenario touch: FAIL ...`
+  line quoted verbatim** in the phase-2 report and pasted into this section — that quote is
+  the only evidence the assertions can fail:
   - flip the drag sign → `drag-yaw` red
   - force `Classify` to Look → `tap`/`hold` red
   - drop the `Wish` merge → `stick` red
@@ -145,19 +160,20 @@ Phase 2 WILL NOT prove:
 
 Device testing is the user's job.
 
-## 8. Open questions
+## 8. Rulings (2026-09-23, Boss)
 
-| Question | Recommendation |
+All eight questions are decided; nothing here is open.
+
+| Question | Ruling |
 |---|---|
-| Sprint button | No |
-| Creative toggle | No |
-| Respawn button | No |
-| Rotate Q/E buttons | Yes |
-| Desktop debug flag | `--touch` |
-| Tap/hold assignment | Tap = place, hold = break |
-| Hotbar row vs cycle | Row |
-
-Android should lock landscape: that is lead-20's `export_presets.cfg`, ask the Boss.
+| Sprint button | **No.** Upgrade path if ever wanted: forward-direction double-tap on the stick (zero HUD space) — not a button. |
+| Creative toggle | **No** — debug-only, via CLI/debug flag. |
+| Respawn button | **No** — the existing auto-unstuck covers it (`Move` depenetration, `src/PlayerSystems.cs:172-175`). |
+| Rotate Q/E buttons | **Yes** — 24-orientation placement is a core mechanic and cannot be missing on mobile. |
+| Desktop debug flag | **Yes** — `--touch`, which doubles as the HUD screenshot evidence path. |
+| Tap/hold assignment | Tap = place, hold = break (MC PE style); drag = pure look, no place and no mine. |
+| Hotbar row vs cycle | **Row of 9 buttons** — landscape is locked, the width is there; no cycle key (dead configuration). |
+| Android landscape lock | **Already done by lead-20** — `window/handheld/orientation=4` in `project.godot`; `export_presets.cfg` untouched. |
 
 ## 9. File inventory + phase-2 diff budget
 
