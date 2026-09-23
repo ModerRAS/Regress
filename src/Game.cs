@@ -103,6 +103,12 @@ public partial class Game : Node3D
 		_selfTest = HasArg("--selftest");
 		_shotPath = ArgValue("--shot=");
 		if (int.TryParse(ArgValue("--shot-frame="), out int shotFrame)) _shotFrame = shotFrame;
+		TouchControls.Active = DisplayServer.IsTouchscreenAvailable() || HasArg("--touch") || HasArg("--touchtest");
+		if (TouchControls.Active)
+		{
+			Input.EmulateMouseFromTouch = false;
+			Input.EmulateTouchFromMouse = HasArg("--touch");
+		}
 		VoxelWorld.UseTiles(TexPack.Load(ArgValue("--pack=")));
 
 		World = new VoxelWorld { Name = "World", Focus = new Vector3(0.5f, 0, 0.5f) };
@@ -143,6 +149,13 @@ public partial class Game : Node3D
 			World.Focus = spawn;
 			_walkStart = spawn;
 			if (HasArg("--diag")) DiagSpawn(spawn);
+		}
+
+		if (TouchControls.Active && Player != null)
+		{
+			var touch = new TouchControls { Name = "Touch", Player = Player };
+			AddChild(touch);
+			if (HasArg("--touchtest")) AddChild(new TouchTest(World, Player, touch));
 		}
 
 		if (!_selfTest)
