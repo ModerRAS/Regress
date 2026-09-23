@@ -53,6 +53,11 @@ jobs:
           "$HOME/godot/godot" --headless --path . -- --selftest 2>&1 | tee selftest.log
           grep -q 'SELFTEST PASS' selftest.log
 
+      - name: Game tests (tier A, headless)
+        run: |
+          set -o pipefail
+          python tools/run_game_tests.py --godot "$HOME/godot/godot" --tier A 2>&1 | tee gametests.log
+
       - name: Texture-pack completeness (docs/texture-packs.md)
         run: python tools/check_completeness.py --table docs/texture-packs.md
 
