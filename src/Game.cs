@@ -15,6 +15,9 @@ public partial class Game : Node3D
 	private int _frames;
 	private bool _selfTest;
 	private Vector3 _walkStart;
+	private int _walkDelay;
+	private bool _walkSettling;
+	private int _demoStep;
 	private float _digStartY;
 	// The dig-down gate: ReportDigDown passes only when the player sinks more than this.
 	private const float DigDepthTarget = 40f;
@@ -63,7 +66,12 @@ public partial class Game : Node3D
 	// 240 frames is ~4x the 64-frame one-section-per-frame lower bound and still leaves the
 	// fall room inside the 2148-frame window. If it times out, the measured rebuild time is
 	// the number to raise.
+	// These are demo-clock frames (`_demoStep = _frames - _walkDelay`), so the walk settle cannot eat the window.
 	private const int DigReadyFrames = 240;
+	// The walk gate's landing poll: a bounded wait for IsOnFloor after the walk stops. Slow frames
+	// accumulate more physics ticks, so a fixed-frame sample can catch the player mid-fall and fail
+	// a run whose content is identical (measured: CI red, local green on the same commit).
+	private const int WalkSettleFrames = 240;
 	private const int DigLayersTarget = 40;   // the gate's physical meaning; one-batch queue reaches it
 	// The shaft's cross-section in cells relative to (_digShaftX,_digShaftZ): 6 wide, so the dug
 	// interval is [cx + ShaftMin, cx + ShaftMax + 1) and its GEOMETRIC centre is cx + 1. The cell
@@ -222,17 +230,18 @@ public partial class Game : Node3D
 		{
 			ref var intent = ref Player.Self.GetComponent<PlayerIntent>();
 			ref var state = ref Player.Self.GetComponent<PlayerState>();
-			switch (_frames)
+			_demoStep = _frames - _walkDelay; // the demo clock pauses while the walk settles
+			switch (_demoStep)
 			{
 				case 60:
 					_walkStart = Player.GlobalPosition;
 					intent.AutoWalk = true;
 					break;
 
-				case 240:
+				case 240 when !_walkSettling:
 					intent.AutoWalk = false;
 					state.Pitch = Mathf.DegToRad(-42f);
-					ReportWalk();
+					_walkSettling = true; // the report moves to the landing poll below
 					break;
 
 				case 246:
@@ -345,7 +354,16 @@ public partial class Game : Node3D
 					return;
 			}
 
-			if (_digPhase && _frames > 252) DigStep();
+			// walk 的终点是瞬时状态，采样帧与物理节奏耦合 => 门禁会随机器变红. Poll to the landing
+			// state (bounded) before asserting; a timeout reports with the diagnostics.
+			if (_walkSettling)
+			{
+				if (Player.IsOnFloor()) { _walkSettling = false; ReportWalk(_walkDelay); }
+				else if (_walkDelay >= WalkSettleFrames) { _walkSettling = false; ReportWalk(_walkDelay); }
+				else _walkDelay++;
+			}
+
+			if (_digPhase && _demoStep > 252) DigStep();
 		}
 
 		// 90 frames let streaming/meshing settle; --shot-frame=N captures later states (e.g. the demo interaction HUD line).
@@ -370,13 +388,15 @@ public partial class Game : Node3D
 		Prof.Move += Prof.Since(p0);
 	}
 
-	private void ReportWalk()
+	private void ReportWalk(int waitedFrames)
 	{
 		var moved = Player.GlobalPosition - _walkStart;
 		float distance = new Vector2(moved.X, moved.Z).Length();
 		float drop = _walkStart.Y - Player.GlobalPosition.Y;
+		// waited= is permanent (not debug): the CI log shows whether the slow-runner landing poll
+		// was actually exercised (waited>0) and that the run still passed after the wait.
 		GD.Print($"walk: {_walkStart} -> {Player.GlobalPosition} ({distance:F1} blocks, drop {drop:F1}, "
-			+ $"onFloor={Player.IsOnFloor()}, chunks={World.LoadedChunks})");
+			+ $"onFloor={Player.IsOnFloor()}, waited={waitedFrames}f, chunks={World.LoadedChunks})");
 		// A player cannot walk up a one-block step, so "did not travel" is only a failure if
 		// nothing is actually blocking them.
 		bool blocked = PlayerSystems.BlockedAhead(World, Player.Self, 5.6f);
@@ -395,7 +415,7 @@ public partial class Game : Node3D
 		GD.Print($"digdown: sank {depth:F1} blocks to y={Player.GlobalPosition.Y:F1}, "
 			+ $"onFloor={standing}, aboveBedrock={aboveBedrock}, chunks={World.LoadedChunks}");
 		GD.Print($"digdown: excavated layers={_digLayers} (need {DigLayersTarget}), breaks={_digBreaks} "
-			+ $"(expect ~{_digLayers * 36}), frames={_frames - 252}, depth={depth:F1} (need >= layers-1), "
+			+ $"(expect ~{_digLayers * 36}), frames={_demoStep - 252}, depth={depth:F1} (need >= layers-1), "
 			+ $"descent ended at frame={_digFallStopFrame} (fall started at {_digFallFrame})");
 		GD.Print(pass
 			? $"DIGDOWN PASS column=({_digColumnX},{_digColumnZ}) run={_digRun} layers={_digLayers} sank={depth:F1}"
@@ -504,7 +524,7 @@ public partial class Game : Node3D
 			}
 			else
 			{
-				if (_frames - 252 > DigReadyFrames)
+				if (_demoStep - 252 > DigReadyFrames)
 					DigFail($"readiness poll timed out after {DigReadyFrames} frames "
 						+ $"(loaded={loaded} sectionReady={sectionReady} aiming={aiming})");
 				return;
