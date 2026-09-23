@@ -34,9 +34,9 @@ public partial class Game : Node3D
 
 		if (HasArg("--freecam"))
 		{
-			var cam = new Camera3D { Name = "FreeCam", Current = true, Position = new Vector3(0, 42, 46), Fov = 70f };
+			var cam = new Camera3D { Name = "FreeCam", Current = true, Position = new Vector3(0, 168, 184), Fov = 70f };
 			AddChild(cam);
-			cam.LookAt(new Vector3(0, 2, 0), Vector3.Up);
+			cam.LookAt(new Vector3(0, 8, 0), Vector3.Up);
 		}
 		else if (HasArg("--map"))
 		{
@@ -45,10 +45,10 @@ public partial class Game : Node3D
 			{
 				Name = "MapCam",
 				Current = true,
-				Position = new Vector3(0, 200, 0.01f),
+				Position = new Vector3(0, 800, 0.04f),
 				Projection = Camera3D.ProjectionType.Orthogonal,
-				Size = 200f,
-				Far = 400f,
+				Size = 800f,
+				Far = 1600f,
 			};
 			AddChild(cam);
 			cam.LookAt(Vector3.Zero, Vector3.Up);
@@ -56,7 +56,7 @@ public partial class Game : Node3D
 		else
 		{
 			var spawn = World.FindSpawn();
-			World.EnsureAreaAround(spawn, 1); // ground must exist before the player drops in
+			World.EnsureAreaAround(spawn, 0); // only the landing chunk is forced; the rest streams
 			Player = new Player { Name = "Player", World = World, Position = spawn };
 			AddChild(Player);
 			Ghost = new PlacementGhost { Name = "PlacementGhost" };
@@ -92,9 +92,11 @@ public partial class Game : Node3D
 		if (!World.TryGetChunk(0, 0, 0, out var e)) { GD.Print("diag chunk (0,0,0) MISSING"); return; }
 		var c = e.GetComponent<ChunkCoord>();
 		var v = e.GetComponent<ChunkVisual>();
-		GD.Print($"diag chunk{c} mesh={(v.Mesh?.Mesh != null)} shape={v.Shape?.Shape?.GetType().Name ?? "none"} "
-			+ $"bodyPos={v.Body?.Position.ToString() ?? "none"} shapePos={v.Shape?.Position.ToString() ?? "none"} "
-			+ $"tags=[{e.Tags}]");
+		int meshed = 0, shaped = 0;
+		if (v.Meshes != null) foreach (var m in v.Meshes) if (m?.Mesh != null) meshed++;
+		if (v.Shapes != null) foreach (var s in v.Shapes) if (s?.Shape != null) shaped++;
+		GD.Print($"diag chunk{c} meshes={meshed}/{ChunkVisual.SectionCount} shapes={shaped} "
+			+ $"cursor={v.Cursor} tags=[{e.Tags}]");
 	}
 
 	public override void _Process(double delta)
@@ -219,9 +221,9 @@ public partial class Game : Node3D
 			+ $"onFloor={Player.IsOnFloor()}, chunks={World.LoadedChunks})");
 		// A player cannot walk up a one-block step, so "did not travel" is only a failure if
 		// nothing is actually blocking them.
-		bool blocked = PlayerSystems.BlockedAhead(World, Player.Self, 1.4f);
-		bool ok = Player.IsOnFloor() && drop < 20f && (distance > 4f || blocked);
-		GD.Print(ok ? $"walk: PASS{(blocked && distance <= 4f ? " (blocked by terrain)" : "")}" : "walk: FAIL");
+		bool blocked = PlayerSystems.BlockedAhead(World, Player.Self, 5.6f);
+		bool ok = Player.IsOnFloor() && drop < 80f && (distance > 16f || blocked);
+		GD.Print(ok ? $"walk: PASS{(blocked && distance <= 16f ? " (blocked by terrain)" : "")}" : "walk: FAIL");
 	}
 
 	private void ReportDigDown()
@@ -231,7 +233,7 @@ public partial class Game : Node3D
 		bool aboveBedrock = Player.GlobalPosition.Y > World.BedrockY;
 		GD.Print($"digdown: sank {depth:F1} blocks to y={Player.GlobalPosition.Y:F1}, "
 			+ $"onFloor={standing}, aboveBedrock={aboveBedrock}, chunks={World.LoadedChunks}");
-		GD.Print(standing && aboveBedrock && depth > 10f ? "DIGDOWN PASS" : "DIGDOWN FAIL");
+		GD.Print(standing && aboveBedrock && depth > 40f ? "DIGDOWN PASS" : "DIGDOWN FAIL");
 	}
 
 	/// <summary>Verifies an edit request landed. Requests are applied by the world at the
@@ -246,7 +248,7 @@ public partial class Game : Node3D
 	public void RefreshHud()
 	{
 		if (_hud == null || Player == null) return;
-		_hud.Text = $"Regress (16^3 chunks, unbounded Y) — WASD move, Space jump, Shift sprint, F fly, LMB break, RMB place\n"
+		_hud.Text = $"Regress ({VoxelWorld.ChunkSize}^3 chunks, unbounded Y) — WASD move, Space jump, Shift sprint, F fly, LMB break, RMB place\n"
 			+ $"1-8 select block: {Blocks.NameOf(Player.Selected)}   R respawn   Esc release mouse"
 			+ (BlockInteractions.Message == null ? "" : $"\nRMB use: {BlockInteractions.Message}");
 	}
@@ -282,7 +284,9 @@ public partial class Game : Node3D
 			// and for telling "hazy" apart from "actually darker".
 			FogEnabled = !HasArg("--nofog"),
 			FogLightColor = haze,
-			FogDensity = 0.008f,
+			// Fog hides the world edge at the view distance: 0.008 x 80/192 = 0.0033, so the
+			// old 125-unit reach (1.56x the old 80-unit view) becomes ~303 units at the new 192.
+			FogDensity = 0.0033f,
 		};
 		AddChild(new WorldEnvironment { Name = "Environment", Environment = env });
 	}

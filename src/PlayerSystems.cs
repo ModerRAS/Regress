@@ -85,13 +85,13 @@ public enum ClickAction : byte { None, Interact, Place }
 /// </summary>
 public static class PlayerSystems
 {
-	public const float Reach = 6f;
-	public const float EyeHeight = 1.62f;
-	private const float WalkSpeed = 5.5f;
-	private const float SprintSpeed = 9f;
-	private const float FlySpeed = 14f;
-	private const float Gravity = 26f;
-	private const float JumpVelocity = 8.5f;
+	public const float Reach = 24f;
+	public const float EyeHeight = 6.48f;
+	private const float WalkSpeed = 22f;
+	private const float SprintSpeed = 36f;
+	private const float FlySpeed = 56f;
+	private const float Gravity = 104f;
+	private const float JumpVelocity = 34f;
 
 	/// <summary>Keyboard and mouse buttons -> intent. The only place that reads Input.</summary>
 	public static void PollInput(EntityStore store)
@@ -170,11 +170,14 @@ public static class PlayerSystems
 
 			// A kinematic body that ends up inside solid geometry has no way out: MoveAndSlide
 			// accumulates velocity but cannot depenetrate. Put the player back on the surface.
-			var feet = node.GlobalPosition + new Vector3(0, 0.1f, 0);
+			var feet = node.GlobalPosition + new Vector3(0, 0.4f, 0);
 			if (Blocks.IsSolid(world.GetBlock(Mathf.FloorToInt(feet.X), Mathf.FloorToInt(feet.Y), Mathf.FloorToInt(feet.Z)))
-				|| node.GlobalPosition.Y < world.BedrockY - 16f) TeleportToSurface(entity, world);
+				|| node.GlobalPosition.Y < world.BedrockY - 64f) TeleportToSurface(entity, world);
 		});
 	}
+
+	// TEMP DIAGNOSIS (lead-16): remove after the DIGDOWN root cause is known.
+	[System.ThreadStatic] private static int _digDumpFrames;
 
 	/// <summary>Accumulates break progress and emits a request when the block gives way.</summary>
 	public static void Mine(EntityStore store, VoxelWorld world, float delta)
@@ -182,8 +185,19 @@ public static class PlayerSystems
 		store.Query<PlayerIntent, PlayerState, PlayerBody, PlayerMining>().ForEachEntity(
 			(ref PlayerIntent intent, ref PlayerState state, ref PlayerBody body, ref PlayerMining mining, Entity entity) =>
 		{
+			// TEMP DIAGNOSIS (lead-16): remove after the DIGDOWN root cause is known.
+			if (intent.AutoMine && ++_digDumpFrames % 60 == 0) DigDump(world, body);
+
 			if (!intent.Mining || !CrosshairBlock(world, body.Node, state.Yaw, state.Pitch, out var cell))
 			{
+				// TEMP DIAGNOSIS (lead-16): remove after the DIGDOWN root cause is known.
+				if (intent.AutoMine)
+				{
+					if (!Raycast(world, body.Node, state.Yaw, state.Pitch, out var p, out var n))
+						GD.Print($"dig-probe NO RAY HIT yaw={state.Yaw:F3} pitch={state.Pitch:F3} eye={body.Node.GlobalPosition + new Vector3(0, EyeHeight, 0)} reach={Reach}");
+					else
+						GD.Print($"dig-probe ray hit {p} normal={n} cell={BlockAt(p - n * 0.5f)} solid={Blocks.IsSolid(world.GetBlock(BlockAt(p - n * 0.5f).X, BlockAt(p - n * 0.5f).Y, BlockAt(p - n * 0.5f).Z))}");
+				}
 				StopMining(ref mining);
 				return;
 			}
@@ -192,6 +206,9 @@ public static class PlayerSystems
 			float hardness = Blocks.HardnessOf(block);
 			if (hardness < 0f)
 			{
+				// TEMP DIAGNOSIS (lead-16): remove after the DIGDOWN root cause is known.
+				if (intent.AutoMine)
+					GD.Print($"dig-probe UNBREAKABLE cell={cell} block={block} hardness={hardness} creative={state.Creative} feet={body.Node.GlobalPosition}");
 				StopMining(ref mining);
 				return;
 			}
@@ -204,11 +221,97 @@ public static class PlayerSystems
 			}
 
 			mining.Progress = state.Creative || hardness <= 0f ? 1f : mining.Progress + delta / hardness;
+			// TEMP DIAGNOSIS (lead-16): remove after the DIGDOWN root cause is known.
+			if (intent.AutoMine)
+				GD.Print($"dig-probe cell={cell} block={block} hardness={hardness} creative={state.Creative} "
+					+ $"progress={mining.Progress:F2} yaw={state.Yaw:F3} pitch={state.Pitch:F3} "
+					+ $"feet={body.Node.GlobalPosition} eye={body.Node.GlobalPosition + new Vector3(0, EyeHeight, 0)}");
 			if (mining.Progress < 1f) return;
 
 			world.RequestEdit(EditRequest.Break(cell, entity));
 			mining.Progress = 0f;
 		});
+	}
+
+	// TEMP DIAGNOSIS (lead-16): remove after the DIGDOWN root cause is known.
+	private static void DigDump(VoxelWorld world, PlayerBody body)
+	{
+		var feet = body.Node.GlobalPosition;
+		int fx = Mathf.FloorToInt(feet.X), fy = Mathf.FloorToInt(feet.Y), fz = Mathf.FloorToInt(feet.Z);
+		if (!world.TryGetChunk(fx, fy, fz, out var ce))
+		{
+			GD.Print($"dig-dump NO CHUNK at feet ({fx},{fy},{fz}) feet={feet}");
+			return;
+		}
+		var cv = ce.GetComponent<ChunkVisual>();
+		var cc = ce.GetComponent<ChunkCoord>();
+		int meshed = 0, shaped = 0;
+		if (cv.Meshes != null) foreach (var m in cv.Meshes) if (m?.Mesh != null) meshed++;
+		if (cv.Shapes != null) foreach (var s in cv.Shapes) if (s?.Shape != null) shaped++;
+		GD.Print($"dig-dump chunk={cc} cursor={cv.Cursor} meshDone={System.Numerics.BitOperations.PopCount(cv.MeshDone)} "
+			+ $"colDone={System.Numerics.BitOperations.PopCount(cv.CollisionDone)} meshes={meshed} shapes={shaped} "
+			+ $"tags=[{ce.Tags}] feet={feet}");
+
+		var ps = new Vector3I(VoxelWorld.FloorDiv(fx, VoxelWorld.SectionSize),
+			VoxelWorld.FloorDiv(fy, VoxelWorld.SectionSize), VoxelWorld.FloorDiv(fz, VoxelWorld.SectionSize));
+		for (int dy = -2; dy <= 0; dy++)
+		{
+			var ws = ps + new Vector3I(0, dy, 0);
+			int sx = ws.X * VoxelWorld.SectionSize, sy = ws.Y * VoxelWorld.SectionSize, sz = ws.Z * VoxelWorld.SectionSize;
+			if (!world.TryGetChunk(sx, sy, sz, out var se))
+			{
+				GD.Print($"dig-dump sec={ws} NO CHUNK");
+				continue;
+			}
+			var sv = se.GetComponent<ChunkVisual>();
+			var sc = se.GetComponent<ChunkCoord>();
+			int si = ((ws.Y - sc.Y * VoxelWorld.SectionsPerAxis) * VoxelWorld.SectionsPerAxis
+				+ (ws.Z - sc.Z * VoxelWorld.SectionsPerAxis)) * VoxelWorld.SectionsPerAxis
+				+ (ws.X - sc.X * VoxelWorld.SectionsPerAxis);
+			GD.Print($"dig-dump sec={ws} si={si} mesh={sv.Meshes?[si]?.Mesh != null} "
+				+ $"shape={sv.Shapes?[si]?.Shape?.GetType().Name ?? "none"} "
+				+ $"bodyPos={sv.Bodies?[si]?.Position.ToString() ?? "none"} shapePos={sv.Shapes?[si]?.Position.ToString() ?? "none"}");
+		}
+
+		for (int y = fy; y > fy - 20; y--)
+			GD.Print($"dig-dump data ({fx},{y},{fz}) = {world.GetBlock(fx, y, fz)}");
+
+		// TEMP DIAGNOSIS (lead-16): support probe.
+		int dataGround = int.MinValue;
+		for (int dz = -2; dz <= 2; dz++)
+			for (int dx = -2; dx <= 2; dx++)
+				for (int yy = fy + 1; yy > fy - 30; yy--)
+					if (Blocks.IsSolid(world.GetBlock(fx + dx, yy, fz + dz)))
+					{
+						dataGround = Mathf.Max(dataGround, yy);
+						break;
+					}
+		GD.Print($"dig-dump feet={feet} onFloor={body.Node.IsOnFloor()} vel={body.Node.Velocity} "
+			+ $"dataGroundY={dataGround} gap={(dataGround == int.MinValue ? -999f : feet.Y - dataGround):F2}");
+		int near = 0; float best = 1e9f;
+		foreach (var child in world.GetChildren())
+		{
+			if (child is StaticBody3D sb)
+			{
+				float d = sb.Position.DistanceTo(feet);
+				if (d < 3f) near++;
+				best = Mathf.Min(best, d);
+			}
+		}
+		GD.Print($"dig-dump bodies near={near} nearest={best:F2} worldChildren={world.GetChildCount()}");
+
+		// TEMP DIAGNOSIS (lead-16): chunk-data vs coord probe.
+		var cc2 = ce.GetComponent<ChunkCoord>();
+		int surfaceAtCoord = world.Terrain.HeightAt(cc2.X * VoxelWorld.ChunkSize, cc2.Z * VoxelWorld.ChunkSize);
+		int topHere = int.MinValue;
+		for (int yy = fy + 2; yy > fy - 40; yy--)
+			if (Blocks.IsSolid(world.GetBlock(fx, yy, fz)))
+			{
+				topHere = yy;
+				break;
+			}
+		GD.Print($"dig-dump coord={cc2} expectedSurfaceAtOrigin={surfaceAtCoord} topSolidAtPlayerColumn={topHere} "
+			+ $"feetY={feet.Y:F3} meshCount={System.Numerics.BitOperations.PopCount(cv.MeshDone)}");
 	}
 
 	/// <summary>Canonical allowed value list per block, ordered by <see cref="Orientation.ToIndex"/>
@@ -352,8 +455,8 @@ public static class PlayerSystems
 		int wx = Mathf.FloorToInt(node.GlobalPosition.X);
 		int wz = Mathf.FloorToInt(node.GlobalPosition.Z);
 		int y = world.SurfaceY(wx, wz);
-		world.EnsureAreaAround(new Vector3(wx + 0.5f, y, wz + 0.5f), 1);
-		node.GlobalPosition = new Vector3(wx + 0.5f, y + 0.5f, wz + 0.5f);
+		world.EnsureAreaAround(new Vector3(wx + 2f, y, wz + 2f), 0); // only the landing chunk is forced; the rest streams
+		node.GlobalPosition = new Vector3(wx + 2f, y + 2f, wz + 2f);
 		node.Velocity = Vector3.Zero;
 	}
 
@@ -430,7 +533,7 @@ public static class PlayerSystems
 		ref var state = ref player.GetComponent<PlayerState>();
 		ref var body = ref player.GetComponent<PlayerBody>();
 		var node = body.Node;
-		var eye = node.GlobalPosition + new Vector3(0, 0.9f, 0);
+		var eye = node.GlobalPosition + new Vector3(0, 3.6f, 0);
 		var dir = -Basis.FromEuler(new Vector3(0, state.Yaw, 0)).Z;
 		var query = PhysicsRayQueryParameters3D.Create(eye, eye + dir * distance);
 		query.Exclude = new Godot.Collections.Array<Rid> { node.GetRid() };
@@ -468,7 +571,7 @@ public static class PlayerSystems
 		=> new(Mathf.FloorToInt(p.X), Mathf.FloorToInt(p.Y), Mathf.FloorToInt(p.Z));
 
 	private static Aabb PlayerBox(CharacterBody3D node)
-		=> new(node.GlobalPosition - new Vector3(0.35f, 0.1f, 0.35f), new Vector3(0.7f, 1.9f, 0.7f));
+		=> new(node.GlobalPosition - new Vector3(1.4f, 0.4f, 1.4f), new Vector3(2.8f, 7.6f, 2.8f));
 
 	private static Aabb BlockBox(Vector3I cell) => new(new Vector3(cell.X, cell.Y, cell.Z), Vector3.One);
 }
