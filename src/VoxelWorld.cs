@@ -52,8 +52,32 @@ public partial class VoxelWorld : Node3D
         Shader = GD.Load<Shader>("res://src/voxel_tiles.gdshader"),
     };
 
+    private static Texture2DArray _tiles;
+    private static ShaderMaterial _ghostMaterial;
+
     /// <summary>Injects the loaded tile array into the shared chunk material.</summary>
-    public static void UseTiles(Texture2DArray tiles) => Material.SetShaderParameter("tiles", tiles);
+    public static void UseTiles(Texture2DArray tiles)
+    {
+        _tiles = tiles;
+        Material.SetShaderParameter("tiles", tiles);
+    }
+
+    /// <summary>Translucent copy of the chunk material for the placement preview. Created lazily,
+    /// so a run that never shows a ghost never pays for it. The chunk path keeps using Material.</summary>
+    public static ShaderMaterial GhostMaterial
+    {
+        get
+        {
+            if (_ghostMaterial == null)
+            {
+                _ghostMaterial = (ShaderMaterial)Material.Duplicate();
+                _ghostMaterial.SetShaderParameter("alpha_scale", 0.5f);
+                _ghostMaterial.SetShaderParameter("albedo_scale", 0.75f);
+                if (_tiles != null) _ghostMaterial.SetShaderParameter("tiles", _tiles);
+            }
+            return _ghostMaterial;
+        }
+    }
 
     /// <summary>Chunk coordinate -> entity. ECS has no spatial index, so the world keeps one.</summary>
     private readonly Dictionary<Vector3I, Entity> _index = new();

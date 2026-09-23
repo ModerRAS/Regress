@@ -21,9 +21,19 @@ public struct PlayerState : IComponent
     public float Yaw;
     public float Pitch;
 
-    /// <summary>Orientation byte used by the next placement. The placement rule seeds it,
-    /// the rotate key steps it with <see cref="Blocks.NextAllowed"/>.</summary>
+    /// <summary>Orientation byte used by the next placement. Invariant: canonical (0..24, never
+    /// the duplicate byte 9) and always <see cref="Blocks.Allows"/> for <see cref="Selected"/>.
+    /// The placement rule seeds it while nothing is remembered; Q/E and accepted placements
+    /// own every write.</summary>
     public byte PendingOrientation;
+
+    /// <summary>The last orientation the player chose (rotated, or the byte an accepted click
+    /// sent). Always a canonical allowed byte; never a sentinel.</summary>
+    public byte StickyOrientation;
+
+    /// <summary>The block type <see cref="StickyOrientation"/> belongs to.
+    /// <see cref="Block.Air"/> means "nothing remembered yet" - no 255 sentinel.</summary>
+    public Block StickyBlock;
 
     /// <summary>Last values pushed to the scene graph. Node3D.Rotation is derived from the
     /// basis, so comparing against it is not bit-exact and would re-write every frame.</summary>
@@ -43,6 +53,13 @@ public struct PlayerIntent : IComponent
 
     /// <summary>Queued right-clicks. A counter, because a frame can contain several.</summary>
     public int Place;
+
+    /// <summary>Edge-triggered rotate presses queued this frame: Q = next, E = previous.</summary>
+    public int RotateNext, RotatePrev;
+
+    /// <summary>Last frame's key state, for the edge detection in <see cref="PlayerSystems.PollInput"/>.
+    /// Polled, not event-based, so a scripted run can feed the counters directly.</summary>
+    public bool RotateNextHeld, RotatePrevHeld;
 
     /// <summary>Scripted input for --demo and --bench, OR-ed with the keyboard.</summary>
     public bool AutoWalk, AutoSprint, AutoMine;
@@ -92,6 +109,13 @@ public static class PlayerSystems
             intent.Sprint = intent.AutoSprint || Input.IsKeyPressed(Key.Shift);
             intent.Mining = intent.AutoMine
                 || (Input.MouseMode == Input.MouseModeEnum.Captured && Input.IsMouseButtonPressed(MouseButton.Left));
+
+            bool rotateNext = Input.IsKeyPressed(Key.Q);
+            bool rotatePrev = Input.IsKeyPressed(Key.E);
+            if (rotateNext && !intent.RotateNextHeld) intent.RotateNext++;
+            if (rotatePrev && !intent.RotatePrevHeld) intent.RotatePrev++;
+            intent.RotateNextHeld = rotateNext;
+            intent.RotatePrevHeld = rotatePrev;
         });
     }
 
@@ -183,6 +207,128 @@ public static class PlayerSystems
         });
     }
 
+    /// <summary>Canonical allowed value list per block, ordered by <see cref="Orientation.ToIndex"/>
+    /// starting at the identity row (row 8): 0, 10..24, 1..8 for Any, so Upright reads as the
+    /// 0 -> 10 -> 11 -> 12 yaw spin. Static: the rotate keys never allocate.</summary>
+    private static readonly byte[][] RotateOrder = BuildRotateOrder();
+
+    private static byte[][] BuildRotateOrder()
+    {
+        var canonical = new byte[Orientation.Count];
+        int n = 0;
+        for (int value = 0; value <= Orientation.Count; value++)
+            if (value != Orientation.IdentityDuplicate) canonical[n++] = (byte)value;
+        System.Array.Sort(canonical, (a, b) => Orientation.ToIndex(a).CompareTo(Orientation.ToIndex(b)));
+        int start = System.Array.IndexOf(canonical, Orientation.None);
+        var ordered = new byte[canonical.Length];
+        for (int i = 0; i < canonical.Length; i++) ordered[i] = canonical[(start + i) % canonical.Length];
+
+        var order = new byte[9][];
+        for (int i = 0; i < order.Length; i++)
+        {
+            var block = (Block)i;
+            int count = 0;
+            foreach (byte value in ordered) if (Blocks.Allows(block, value)) count++;
+            var allowed = new byte[count];
+            int k = 0;
+            foreach (byte value in ordered) if (Blocks.Allows(block, value)) allowed[k++] = value;
+            order[i] = allowed;
+        }
+        return order;
+    }
+
+    /// <summary>Q/E presses -> the next/previous allowed orientation. Rotation writes the
+    /// pending state and the memory, never an already-placed block.</summary>
+    private static void Rotate(ref PlayerState state, ref PlayerIntent intent)
+    {
+        byte[] allowed = RotateOrder[(int)state.Selected];
+        int index = System.Array.IndexOf(allowed, state.PendingOrientation);
+        if (index < 0) index = intent.RotateNext > 0 ? allowed.Length - 1 : 0; // stale byte: first step lands on the list start
+        for (int i = 0; i < intent.RotateNext; i++) index = (index + 1) % allowed.Length;
+        for (int i = 0; i < intent.RotatePrev; i++) index = (index - 1 + allowed.Length) % allowed.Length;
+        state.PendingOrientation = allowed[index];
+        state.StickyOrientation = allowed[index];
+        state.StickyBlock = state.Selected;
+    }
+
+    /// <summary>
+    /// Applies this frame's rotate presses and the sticky memory to the pending orientation.
+    /// Pure: no scene graph and no physics, so the state machine is testable with a synthetic
+    /// target. <paramref name="target"/> supplies the clicked face the placement rule reads.
+    /// </summary>
+    public static void UpdatePending(ref PlayerState state, ref PlayerIntent intent, PlacementTarget? target)
+    {
+        int clickedFace = target?.Face ?? Face.Top;
+
+        if (intent.RotateNext > 0 || intent.RotatePrev > 0) Rotate(ref state, ref intent);
+
+        if (state.StickyBlock == Block.Air)
+        {
+            // Nothing remembered yet: the placement rule seeds the pending orientation every
+            // frame, so looking around moves the ghost.
+            state.PendingOrientation = BlockBehaviors.PlaceOrientation(state.Selected, clickedFace, state.Yaw, state.Pitch);
+        }
+        else if (state.StickyBlock != state.Selected)
+        {
+            // The memory belongs to another type: snap the remembered byte onto the new type,
+            // never discard it.
+            state.StickyOrientation = Blocks.Snap(state.Selected, state.StickyOrientation);
+            state.StickyBlock = state.Selected;
+            state.PendingOrientation = state.StickyOrientation;
+        }
+
+        intent.RotateNext = 0;
+        intent.RotatePrev = 0;
+    }
+
+    /// <summary>
+    /// Per-frame placement preview. Sits between input and build so a click in this frame
+    /// places the byte the ghost showed: rotate presses land first, then the sticky memory
+    /// decides the pending orientation, then the ghost renders it. The ghost is hidden when
+    /// the click would be refused (no hit, occupied cell, player-box overlap).
+    /// </summary>
+    public static void UpdateGhost(VoxelWorld world, Entity player, PlacementGhost ghost)
+    {
+        ref var state = ref player.GetComponent<PlayerState>();
+        ref var body = ref player.GetComponent<PlayerBody>();
+        ref var intent = ref player.GetComponent<PlayerIntent>();
+
+        var target = PendingTarget(world, body.Node, state.Yaw, state.Pitch);
+        UpdatePending(ref state, ref intent, target);
+        ghost.Update(world, target, state.Selected, state.PendingOrientation);
+    }
+
+    /// <summary>The cell and clicked face the next accepted click would use, or null when the
+    /// click would be refused. This is the one place that assembles the ghost's target.</summary>
+    public static PlacementTarget? PendingTarget(VoxelWorld world, CharacterBody3D node, float yaw, float pitch)
+    {
+        if (!PlaceTarget(world, node, yaw, pitch, out var cell, out int clickedFace)) return null;
+        if (PlacementRefused(world, node, cell)) return null;
+        return new PlacementTarget(cell, clickedFace);
+    }
+
+    /// <summary>True when a placement into this cell would be refused: occupied, or the
+    /// player's own box is in the way.</summary>
+    public static bool PlacementRefused(VoxelWorld world, CharacterBody3D node, Vector3I cell)
+        => world.GetBlock(cell.X, cell.Y, cell.Z) != Block.Air || PlayerBox(node).Intersects(BlockBox(cell));
+
+    /// <summary>Writes an accepted placement and advances the memory to the byte actually
+    /// sent. Split out of <see cref="RequestPlaceAtCrosshair"/> so the write path is testable
+    /// without a physics raycast.</summary>
+    public static byte PlaceAt(VoxelWorld world, Entity player, Vector3I cell)
+    {
+        ref var state = ref player.GetComponent<PlayerState>();
+        // Defensive normaliser at the write site: even a pending byte that is one frame stale
+        // (the --demo path changes Selected and clicks in the same frame) cannot reach a voxel
+        // without passing the selected type's policy.
+        byte orientation = Blocks.Snap(state.Selected, state.PendingOrientation);
+        state.PendingOrientation = orientation;
+        world.RequestEdit(EditRequest.Place(cell, state.Selected, player, orientation));
+        state.StickyOrientation = orientation; // the byte actually sent becomes the memory
+        state.StickyBlock = state.Selected;
+        return orientation;
+    }
+
     /// <summary>Queued place clicks -> place requests.</summary>
     public static void Build(EntityStore store, VoxelWorld world)
     {
@@ -250,14 +396,9 @@ public static class PlayerSystems
     {
         ref var state = ref player.GetComponent<PlayerState>();
         ref var body = ref player.GetComponent<PlayerBody>();
-        // The pending orientation is read once here; the rotate key owns every write to it.
-        if (!PlaceTarget(world, body.Node, state.Yaw, state.Pitch, out var cell, out int clickedFace)) return null;
-        if (PlayerBox(body.Node).Intersects(BlockBox(cell))) return null; // never inside the player
-        // The request layer owns the guarantee: a pending byte the selected type disallows is
-        // re-derived from the placement rule before it can reach the world.
-        if (!Blocks.Allows(state.Selected, state.PendingOrientation))
-            state.PendingOrientation = BlockBehaviors.PlaceOrientation(state.Selected, clickedFace, state.Yaw, state.Pitch);
-        world.RequestEdit(EditRequest.Place(cell, state.Selected, player, state.PendingOrientation));
+        if (!PlaceTarget(world, body.Node, state.Yaw, state.Pitch, out var cell, out _)) return null;
+        if (PlacementRefused(world, body.Node, cell)) return null; // never inside the player
+        PlaceAt(world, player, cell);
         return cell;
     }
 

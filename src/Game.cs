@@ -7,6 +7,7 @@ public partial class Game : Node3D
 {
     public VoxelWorld World { get; private set; }
     public Player Player { get; private set; }
+    public PlacementGhost Ghost { get; private set; }
 
     private Label _hud;
     private string _shotPath;
@@ -55,6 +56,8 @@ public partial class Game : Node3D
             World.EnsureAreaAround(spawn, 1); // ground must exist before the player drops in
             Player = new Player { Name = "Player", World = World, Position = spawn };
             AddChild(Player);
+            Ghost = new PlacementGhost { Name = "PlacementGhost" };
+            AddChild(Ghost);
             World.Focus = spawn;
             _walkStart = spawn;
             if (HasArg("--diag")) DiagSpawn(spawn);
@@ -102,6 +105,7 @@ public partial class Game : Node3D
             PlayerSystems.Look(World.Store);
             Prof.Look += Prof.Since(p1);
             ulong p2 = Time.GetTicksUsec();
+            PlayerSystems.UpdateGhost(World, Player.Self, Ghost);
             PlayerSystems.Mine(World.Store, World, (float)delta);
             PlayerSystems.Build(World.Store, World);
             Prof.Edit += Prof.Since(p2);

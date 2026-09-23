@@ -208,6 +208,7 @@ public static class SelfTest
         CheckPackLoading();
         CheckMesherTextureArrays(world);
         CheckMesherOrientation(world);
+        CheckPlacementPreview(world);
 
         return _failures;
     }
@@ -1190,6 +1191,249 @@ public static class SelfTest
             $"{rotated}/144 face UV bases are the local axes carried by that rotation ({rotatedWrong} wrong)");
         Check(seamWrong == 0,
             $"BuildBlock equals Build per element over 24/24 orientations x 6 attributes ({seamWrong} mismatched)");
+    }
+
+    /// <summary>Canonical and policy-legal for the type: 0..24 and never the duplicate byte 9.</summary>
+    private static bool Canonical(Block b, byte orientation)
+        => orientation <= Orientation.Count
+        && orientation != Orientation.IdentityDuplicate
+        && Blocks.Allows(b, orientation);
+
+    /// <summary>Placement preview: rotate keys, sticky memory, the write-site guard and the
+    /// ghost node's own mesh / visibility (design.md section 5).</summary>
+    private static void CheckPlacementPreview(VoxelWorld world)
+    {
+        GD.Print("  ---- placement preview ----");
+
+        int canonical = 0;
+        for (int value = 0; value <= Orientation.Count; value++)
+            if (value != Orientation.IdentityDuplicate) canonical++;
+        Check(canonical == 24, $"the canonical space holds 24 values (byte 9 excluded) ({canonical})");
+
+        int countWrong = 0;
+        for (int b = 1; b <= (int)Block.Bedrock; b++)
+        {
+            int expected = Blocks.PolicyOf((Block)b) switch
+            {
+                OrientationPolicy.Any => 24,
+                OrientationPolicy.Upright => 4,
+                OrientationPolicy.Axis => 6,
+                _ => 1,
+            };
+            if (AllowedCount((Block)b) != expected) countWrong++;
+        }
+        Check(countWrong == 0,
+            $"policy counts match the canonical space (Any 24, Upright 4, Axis 6, Fixed 1); {countWrong} wrong");
+
+        var probe = new CharacterBody3D { Name = "PreviewProbe", Position = new Vector3(100.5f, 3000f, 100.5f) };
+        world.AddChild(probe);
+        var entity = world.Store.CreateEntity(
+            new PlayerBody { Node = probe },
+            new PlayerState { Selected = Block.Stone },
+            default(PlayerIntent));
+        ref var state = ref entity.GetComponent<PlayerState>();
+        ref var intent = ref entity.GetComponent<PlayerIntent>();
+
+        // -- the rotate keys reach exactly the allowed set -------------------
+        int distinctWrong = 0, illegalWrong = 0, wrapWrong = 0, inverseWrong = 0;
+        var seen = new HashSet<int>();
+        for (int b = 1; b <= (int)Block.Bedrock; b++)
+        {
+            var block = (Block)b;
+            int allowed = AllowedCount(block);
+            state.Selected = block;
+            state.StickyBlock = Block.Air;
+            state.StickyOrientation = Orientation.None;
+            state.Yaw = 0f;
+            state.Pitch = 0f;
+            state.PendingOrientation = BlockBehaviors.PlaceOrientation(block, Face.Top, 0f, 0f);
+            byte start = state.PendingOrientation;
+
+            seen.Clear();
+            for (int press = 0; press < allowed; press++)
+            {
+                intent.RotateNext = 1;
+                PlayerSystems.UpdatePending(ref state, ref intent, null);
+                byte value = state.PendingOrientation;
+                seen.Add(value);
+                if (!Canonical(block, value)) illegalWrong++;
+
+                // Q immediately followed by E is the identity on every state.
+                byte before = value;
+                intent.RotateNext = 1;
+                intent.RotatePrev = 1;
+                PlayerSystems.UpdatePending(ref state, ref intent, null);
+                if (state.PendingOrientation != before) inverseWrong++;
+            }
+            if (seen.Count != allowed) distinctWrong++;
+            if (state.PendingOrientation != start) wrapWrong++;
+        }
+        Check(distinctWrong == 0, $"{8 - distinctWrong}/8 blocks visit exactly |allowed| distinct states (24/24 Any, 4/4 Grass)");
+        Check(illegalWrong == 0, $"every state the rotate keys produce is canonical and Allows-legal ({illegalWrong} bad)");
+        Check(wrapWrong == 0, $"|allowed| presses wrap back to the start on all 8 blocks ({wrapWrong} wrong)");
+        Check(inverseWrong == 0, $"Q then E returns to the previous state ({inverseWrong} wrong)");
+
+        state.Selected = Block.Stone;
+        state.StickyBlock = Block.Air;
+        state.PendingOrientation = Orientation.None;
+        seen.Clear();
+        for (int press = 0; press < 24; press++)
+        {
+            intent.RotateNext = 1;
+            PlayerSystems.UpdatePending(ref state, ref intent, null);
+            seen.Add(state.PendingOrientation);
+        }
+        Check(seen.Count == 24 && state.PendingOrientation == Orientation.None,
+            $"Stone (Any) reaches 24/24 distinct states and wraps ({seen.Count})");
+
+        state.Selected = Block.Grass;
+        state.StickyBlock = Block.Air;
+        state.PendingOrientation = Orientation.None;
+        var spin = new List<byte>();
+        for (int press = 0; press < 4; press++)
+        {
+            intent.RotateNext = 1;
+            PlayerSystems.UpdatePending(ref state, ref intent, null);
+            spin.Add(state.PendingOrientation);
+        }
+        Check(spin.Count == 4 && spin[0] == 10 && spin[1] == 11 && spin[2] == 12 && spin[3] == Orientation.None,
+            $"Grass (Upright) Q spin is 0 -> 10 -> 11 -> 12 -> 0 ([{string.Join(", ", spin)}])");
+
+        // -- sticky memory ---------------------------------------------------
+        state.Selected = Block.Wood;
+        state.StickyBlock = Block.Air;
+        state.StickyOrientation = 17; // a leftover value that must not be copied
+        state.PendingOrientation = 5;
+        state.Yaw = Mathf.Pi * 0.5f;
+        state.Pitch = 0f;
+        var face = new PlacementTarget(new Vector3I(0, 3000, 0), Face.NegZ);
+        PlayerSystems.UpdatePending(ref state, ref intent, face);
+        byte shown = state.PendingOrientation;
+        Check(shown == 22 && state.StickyBlock == Block.Air,
+            $"no memory: the rule seeds the clicked face + yaw ({shown}, want 22, not the stale 17)");
+
+        byte placed = PlayerSystems.PlaceAt(world, entity, new Vector3I(7, 3006, 7));
+        Check(placed == shown && state.StickyBlock == Block.Wood && state.StickyOrientation == shown,
+            $"an accepted placement remembers exactly the byte the ghost showed ({placed})");
+        Check(world.ApplyPendingEdits() == 1 && world.GetOrientation(7, 3006, 7) == placed,
+            "the remembered byte is the byte that reached the voxel");
+        world.SetBlock(7, 3006, 7, Block.Air);
+
+        state.Yaw = Mathf.Pi; // the rule would now derive a different byte
+        PlayerSystems.UpdatePending(ref state, ref intent, face);
+        byte ruleNow = BlockBehaviors.PlaceOrientation(Block.Wood, Face.NegZ, state.Yaw, state.Pitch);
+        Check(state.PendingOrientation == placed && ruleNow != placed,
+            $"the memory overrides the rule after a yaw change (placed {placed}, rule would be {ruleNow})");
+
+        intent.RotateNext = 1;
+        PlayerSystems.UpdatePending(ref state, ref intent, face);
+        Check(state.StickyBlock == Block.Wood && state.StickyOrientation == state.PendingOrientation
+            && state.PendingOrientation != placed && Blocks.Allows(Block.Wood, state.PendingOrientation),
+            $"a rotate press writes both pending and memory ({state.PendingOrientation})");
+
+        state.Selected = Block.Grass;
+        state.StickyBlock = Block.Wood;
+        state.StickyOrientation = 10; // upright: Grass keeps it
+        state.PendingOrientation = 10;
+        PlayerSystems.UpdatePending(ref state, ref intent, face);
+        Check(state.StickyBlock == Block.Grass && state.StickyOrientation == 10 && state.PendingOrientation == 10,
+            $"a type change snaps instead of discarding (Grass keeps {state.StickyOrientation})");
+
+        state.Selected = Block.Grass;
+        state.StickyBlock = Block.Wood;
+        state.StickyOrientation = 1; // not upright for Grass
+        state.PendingOrientation = 1;
+        PlayerSystems.UpdatePending(ref state, ref intent, face);
+        Check(state.StickyOrientation == Blocks.Snap(Block.Grass, 1) && state.StickyOrientation == Orientation.None
+            && Blocks.Allows(Block.Grass, state.PendingOrientation),
+            $"a memory illegal for the new type is projected, not dropped ({state.StickyOrientation})");
+
+        // -- no out-of-range byte escapes ------------------------------------
+        int escapes = 0, placements = 0, updates = 0;
+        var rng = new Random(20260923);
+        for (int step = 0; step < 400; step++)
+        {
+            state.Selected = Blocks.Palette[rng.Next(Blocks.Palette.Length)];
+            if (rng.Next(3) == 0)
+            {
+                intent.RotateNext = rng.Next(5);
+                intent.RotatePrev = rng.Next(5);
+            }
+            if (rng.Next(3) == 0) state.Yaw = (float)(rng.NextDouble() * 12.0 - 6.0);
+            if (rng.Next(3) == 0) state.Pitch = (float)(rng.NextDouble() * 3.0 - 1.5);
+            PlacementTarget? target = rng.Next(2) == 0
+                ? null
+                : new PlacementTarget(new Vector3I(0, 3000, 0), rng.Next(6));
+            PlayerSystems.UpdatePending(ref state, ref intent, target);
+            updates++;
+
+            if (!Canonical(state.Selected, state.PendingOrientation)) escapes++;
+            if (state.StickyBlock != Block.Air && !Canonical(state.StickyBlock, state.StickyOrientation)) escapes++;
+
+            if (rng.Next(2) == 0)
+            {
+                var cell = new Vector3I(21, 3008, 21);
+                byte sent = PlayerSystems.PlaceAt(world, entity, cell);
+                placements++;
+                if (!Canonical(state.Selected, sent)
+                    || state.StickyOrientation != sent || state.StickyBlock != state.Selected) escapes++;
+                world.ApplyPendingEdits();
+                if (world.GetOrientation(cell.X, cell.Y, cell.Z) != sent) escapes++;
+                world.SetBlock(cell.X, cell.Y, cell.Z, Block.Air);
+            }
+        }
+        Check(escapes == 0,
+            $"{updates} updates and {placements} placements leave no out-of-range byte (pending, memory and world bytes all canonical)");
+
+        // -- the ghost node renders the pending (block, orientation) ----------
+        var ghost = new PlacementGhost { Name = "PreviewGhost" };
+        world.AddChild(ghost);
+        var ghostCell = new Vector3I(6, 3007, 6);
+        byte[] meshOrientations = { Orientation.None, 10, 13 };
+        int meshWrong = 0, transformWrong = 0;
+        foreach (byte o in meshOrientations)
+        {
+            ghost.Update(world, new PlacementTarget(ghostCell, Face.Top), Block.Grass, o);
+            var got = ghost.Mesh.Mesh.SurfaceGetArrays(0);
+            var want = ChunkMesher.BuildBlock(Block.Grass, o).SurfaceGetArrays(0);
+            meshWrong += SameBlockArrays(got, want);
+            if (ghost.Position != (Vector3)ghostCell || ghost.Scale != Vector3.One || ghost.Rotation != Vector3.Zero)
+                transformWrong++;
+        }
+        Check(meshWrong == 0, $"the ghost's own mesh equals BuildBlock over 3 orientations ({meshWrong} mismatched)");
+        Check(transformWrong == 0, $"the ghost transform is a pure translation to the cell ({transformWrong} wrong)");
+
+        bool translucent = ghost.Mesh.MaterialOverride is ShaderMaterial material
+            && material.GetShaderParameter("alpha_scale").AsSingle() < 1f;
+        Check(translucent, "the ghost draws through the duplicated translucent material (alpha_scale < 1)");
+
+        // -- hidden when the click would be refused, visible otherwise -------
+        ghost.Update(world, null, Block.Stone, Orientation.None);
+        Check(!ghost.Visible, "ghost hidden with no target");
+
+        var insidePlayer = new Vector3I(Mathf.FloorToInt(probe.Position.X), Mathf.FloorToInt(probe.Position.Y),
+            Mathf.FloorToInt(probe.Position.Z));
+        Check(PlayerSystems.PlacementRefused(world, probe, insidePlayer), "a cell overlapping the player box is refused");
+        var occupied = new Vector3I(11, 3009, 11);
+        world.SetBlock(occupied.X, occupied.Y, occupied.Z, Block.Stone);
+        Check(PlayerSystems.PlacementRefused(world, probe, occupied), "an occupied cell is refused");
+        var clear = new Vector3I(11, 3010, 11);
+        Check(!PlayerSystems.PlacementRefused(world, probe, clear), "a clear cell outside the player box is allowed");
+
+        PlacementTarget? skyTarget = null;
+        try { skyTarget = PlayerSystems.PendingTarget(world, probe, 0f, Mathf.Pi * 0.5f); }
+        catch (Exception e) { GD.Print($"  info  PendingTarget skipped (no physics under --headless): {e.GetType().Name}"); }
+        Check(skyTarget == null, "no target looking straight up (sky)");
+        ghost.Update(world, skyTarget, Block.Stone, Orientation.None);
+        Check(!ghost.Visible, "ghost hidden when the integrated target is null");
+        ghost.Update(world, new PlacementTarget(clear, Face.Top), Block.Stone, Orientation.None);
+        Check(ghost.Visible && ghost.Mesh.Mesh != null && ghost.Position == (Vector3)clear,
+            "ghost visible on a legal target, positioned at the cell");
+        world.SetBlock(occupied.X, occupied.Y, occupied.Z, Block.Air);
+
+        entity.DeleteEntity();
+        ghost.Free();
+        probe.Free();
     }
 
     private static void CheckMesherTextureArrays(VoxelWorld world)

@@ -54,7 +54,7 @@ real, the release is not created.
 | Mouse | look |
 | LMB | hold to mine (duration depends on the block) |
 | RMB | place block |
-| `Q` | rotate the block being placed (cycles the allowed orientations) |
+| `Q` / `E` | rotate the block being placed: `Q` next, `E` previous (cycles the allowed orientations) |
 | `1`–`7` | select block: stone, dirt, grass, sand, wood, plank, leaves |
 | `R` | respawn on the surface |
 | `Esc` | release the mouse |
@@ -128,7 +128,7 @@ per chunk), bounded by time budgets rather than chunk counts. Details and number
 
 | flag | what it does |
 | --- | --- |
-| `--selftest` | 69 headless assertions: terrain, mesher cross-checked against brute force, triangle winding, vertical-world invariants, break/place request pipeline, tree felling, per-world terrain |
+| `--selftest` | 171 headless assertions: terrain, mesher cross-checked against brute force, triangle winding, vertical-world invariants, break/place request pipeline, tree felling, per-world terrain, placement preview (ghost, rotate keys, sticky memory) |
 | `--demo` | drives the player without a keyboard: walk, place, then mine straight down 63 blocks to bedrock, asserting they stay on solid ground |
 | `--bench` | five-phase performance run; `--frozen` measures the engine floor, `--view=` / `--collision=` / `--budget=` sweep |
 | `--shot=path.png` | render N frames, save a PNG, quit |

@@ -116,7 +116,7 @@ face.
 Orientation is the 24-element cube rotation group: a block can take any orientation its type
 allows. The block type carries an allowed-orientation policy (see docs/architecture.md), the
 placement rule snaps the candidate into that set, and the player cycles the allowed values with
-`Q`.
+`Q` (next) and `E` (previous), wrapping within the type's allowed set.
 
 Placement rules are deterministic and total: any clicked face, yaw and pitch yields a defined
 default orientation.
@@ -129,8 +129,9 @@ default orientation.
 - Non-directional blocks default to identity; the type decides the default and the allowed set.
 
 The log-like rule is surjective: the six clicked faces at the four yaw quadrants reach all 24
-rotations, and `Q` iterates every orientation the block's policy allows (24 for an `Any` block,
-4 for an `Upright` block such as `Grass`), so no allowed orientation is out of reach.
+rotations, and `Q`/`E` iterate every orientation the block's policy allows, in both directions
+(24 for an `Any` block, 4 for an `Upright` block such as `Grass`), so no allowed orientation is
+out of reach.
 
 ## Completeness: Block × Face → tile key
 
@@ -562,5 +563,8 @@ the bundled pack, `--pack=texturepacks/default`. Restart to change packs — v1 
 9. **The per-face UV basis was normalised in this build.** The v1 bases mirrored `posx` and
    `negz` in `u` and `bottom` in `v`; all six faces now satisfy `u × v = -n`, so those three
    faces render mirrored against any earlier build. The bundled art is direction-agnostic
-   procedural noise, so the change is imperceptible there. Render/pixel-level baselines captured
-   before this change are void and must not be used as a regression baseline.
+   procedural noise, so "imperceptible" here is a perception-level statement about that
+   direction-agnostic art — not "zero pixels changed": in controlled head-on pairs the
+   normalisation moved 1.09% of the pixels of a sky-like frame (27.88% of the frame) and 69.58%
+   of a vegetation-like frame (59.97% of the frame), mean per-pixel |Δ| ≈ 19/255. Any
+   render/pixel-level baseline captured before this change is void (this weakness).
