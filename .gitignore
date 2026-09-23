@@ -21,6 +21,9 @@ bin/
 obj/
 *.user
 
+# Python bytecode (tools/*.py)
+__pycache__/
+
 # Local agent state
 .pi/
 
