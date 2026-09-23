@@ -8,7 +8,7 @@ and fails if a marker is missing, the exit code is wrong, or an expected artifac
 
 | tier | needs | scenarios | CI |
 | --- | --- | --- | --- |
-| **A** | `--headless`; boots the game logic and the ECS world, no rendering | selftest, demo, bench | **yes** |
+| **A** | `--headless`; boots the game logic and the ECS world, no rendering | selftest, demo, bench, touch, volume | **yes** |
 | **B** | a real renderer/GPU; renders frames and reads pixels back | shot, and any pixel check | **no — local only** |
 
 CI cannot run tier B because the headless dummy driver does not compile GPU pipelines and
@@ -25,13 +25,14 @@ Raw commands:
 godot-mono --headless --path . -- --selftest
 godot-mono --headless --path . -- --demo
 godot-mono --headless --path . -- --bench
+godot-mono --headless --path . -- --volumetest --fine
 godot-mono --path . -- --shot=build/game-tests/shot.png --shot-frame=90   # tier B: real renderer
 ```
 
 Runner:
 
 ```bash
-python tools/run_game_tests.py --tier A        # selftest + demo + bench (default is tier A)
+python tools/run_game_tests.py --tier A        # selftest + demo + bench + touch + volume (default is tier A)
 python tools/run_game_tests.py --tier B        # shot; needs a real renderer
 python tools/run_game_tests.py --only demo     # one scenario by name
 python tools/run_game_tests.py --list          # print the scenario table, run nothing
@@ -65,6 +66,7 @@ Tier B is never wired into CI; run it locally against a real renderer.
 | `demo` | A | `walk: PASS`, `interact: PASS`, ` -> PASS`, `DIGDOWN PASS` (all four are runner markers) | scripted walk, chest place + open, then a scripted dig straight down and settle | yes | 4.1s (lead, local Windows) |
 | `bench` | A | `bench landing PASS` | five frame-time phases with a per-system breakdown; ends by teleporting and asserting the player is still on the ground | yes (see note) | 8.4s (lead, local Windows) |
 | `touch` | A | `scenario touch: PASS hud classify stick stick-release drag-yaw tap-place hold-mine jump fly rotate hotbar` (runner marker: `scenario touch: PASS`) | real `InputEventScreenTouch` / `InputEventScreenDrag` through `Viewport.PushInput` and the `TouchControls` adapter: HUD structure, pure `Classify`, stick -> `Wish`, stick release, look drag -> yaw, tap -> `Place` (real place-queue consume), hold -> `Mining` (real Creative break), Jump / Fly / Q / E / hotbar buttons | yes | 0.9s (worker-56, local Windows, runner) |
+| `volume` | A | `scenario volume: PASS default-coarse cli-fine default-break-64 fine-break-1 default-place-64 fine-place-1 hardest-block ghost-volume` (runner marker: `scenario volume: PASS`) | the operation volume: `--fine` reaching `WorldRules`, the coarse default of one 64-cell break and one 64-cell place per request, the fine 1-cell path, the hardest-block time rule, and the ghost's anchored visible volume. **Ownership split:** `--selftest` runs pinned to fine mode (its legacy fixtures are single-voxel) and never covers the coarse edit path; the coarse default is owned here, plus the selftest's pure alignment/hardness checks | yes | — |
 | `shot` | B | `screenshot saved to <path>` + a PNG artifact ≥ 1024 bytes | renders one frame at `--shot-frame` and saves it; proves the renderer survived to the save call | no | 2.9s (lead, local Windows) |
 
 `bench` note: tier A is proven — the lead ran `godot-mono --headless --path . -- --bench`: exit 0

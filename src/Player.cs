@@ -98,6 +98,11 @@ public partial class Player : CharacterBody3D
 
 		if (key == Key.F) state.Flying = !state.Flying;
 		if (key == Key.G) state.Creative = !state.Creative;
+		if (key == Key.V)
+		{
+			World.Rules.FineMode = !World.Rules.FineMode;
+			GetNodeOrNull<Game>("/root/Main")?.RefreshHud();
+		}
 		if (key == Key.R) PlayerSystems.TeleportToSurface(Self, World);
 	}
 

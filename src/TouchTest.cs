@@ -13,7 +13,7 @@ public partial class TouchTest : Node
 {
 	private static readonly string[] Buttons =
 	{
-		"Jump", "Down", "Fly", "RotateNext", "RotatePrev",
+		"Jump", "Down", "Fly", "RotateNext", "RotatePrev", "Fine",
 		"Slot0", "Slot1", "Slot2", "Slot3", "Slot4", "Slot5", "Slot6", "Slot7", "Slot8",
 	};
 
@@ -29,6 +29,7 @@ public partial class TouchTest : Node
 	private Vector3I _cell;
 	private float _yawBefore;
 	private bool _flyingBefore;
+	private bool _fineModeBefore;
 	private byte _orientationBefore;
 
 	public TouchTest(VoxelWorld world, Player player, TouchControls touch)
@@ -36,6 +37,9 @@ public partial class TouchTest : Node
 		_world = world;
 		_player = player;
 		_touch = touch;
+		// The tap-place and hold-mine gates below assert single-voxel operations, so pin the
+		// mode here instead of depending on whatever the CLI flag left behind.
+		_world.Rules.FineMode = true;
 		ProcessPriority = 1; // runs after Game._Process
 	}
 
@@ -211,6 +215,19 @@ public partial class TouchTest : Node
 				break;
 
 			case 25:
+				_fineModeBefore = _world.Rules.FineMode;
+				TapButton("Fine");
+				Check(_world.Rules.FineMode != _fineModeBefore, "fine-toggle",
+					$"FineMode stayed {_world.Rules.FineMode}");
+				break;
+
+			case 26:
+				TapButton("Fine");
+				Check(_world.Rules.FineMode == _fineModeBefore, "fine-toggle",
+					$"FineMode={_world.Rules.FineMode} expected {_fineModeBefore}");
+				break;
+
+			case 27:
 				Finish();
 				break;
 		}

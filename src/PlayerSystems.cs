@@ -193,17 +193,19 @@ public static class PlayerSystems
 				return;
 			}
 
-			var block = world.GetBlock(cell.X, cell.Y, cell.Z);
-			float hardness = Blocks.HardnessOf(block);
+			float hardness = BlockBehaviors.OperationHardness(world, cell);
 			if (hardness < 0f)
 			{
 				StopMining(ref mining);
 				return;
 			}
 
-			if (!mining.Active || mining.Target != cell)
+			// The target is the operation's anchor, not the aimed cell: moving the crosshair
+			// inside one volume must not reset the progress.
+			var target = BlockBehaviors.OperationAnchor(world, cell);
+			if (!mining.Active || mining.Target != target)
 			{
-				mining.Target = cell;
+				mining.Target = target;
 				mining.Progress = 0f;
 				mining.Active = true;
 			}
@@ -317,10 +319,15 @@ public static class PlayerSystems
 		return new PlacementTarget(cell, clickedFace);
 	}
 
-	/// <summary>True when a placement into this cell would be refused: occupied, or the
-	/// player's own box is in the way.</summary>
+	/// <summary>True when a placement into this cell would be refused: the target cell is
+	/// occupied, or the player's own box overlaps the whole operation volume.</summary>
 	public static bool PlacementRefused(VoxelWorld world, CharacterBody3D node, Vector3I cell)
-		=> world.GetBlock(cell.X, cell.Y, cell.Z) != Block.Air || PlayerBox(node).Intersects(BlockBox(cell));
+	{
+		if (world.GetBlock(cell.X, cell.Y, cell.Z) != Block.Air) return true;
+		var anchor = BlockBehaviors.OperationAnchor(world, cell);
+		int extent = BlockBehaviors.OperationExtent(world.Rules);
+		return PlayerBox(node).Intersects(new Aabb(new Vector3(anchor.X, anchor.Y, anchor.Z), Vector3.One * extent));
+	}
 
 	/// <summary>Writes an accepted placement and advances the memory to the byte actually
 	/// sent. Split out of <see cref="RequestPlaceAtCrosshair"/> so the write path is testable
@@ -481,6 +488,4 @@ public static class PlayerSystems
 
 	private static Aabb PlayerBox(CharacterBody3D node)
 		=> new(node.GlobalPosition - new Vector3(1.4f, 0.4f, 1.4f), new Vector3(2.8f, 7.6f, 2.8f));
-
-	private static Aabb BlockBox(Vector3I cell) => new(new Vector3(cell.X, cell.Y, cell.Z), Vector3.One);
 }

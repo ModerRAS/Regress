@@ -68,7 +68,8 @@ a consumer reads is listed above, so nothing else is needed.
 - Interact-beats-place precedence unchanged: `RightClickAction` (`src/PlayerSystems.cs:405-407`),
   used by `RequestPlaceAtCrosshair` (`:413-431`).
 - Buttons: Jump (= `Up` while flying; both read the same key today,
-  `src/PlayerSystems.cs:110-111`), Down, Fly toggle, hotbar row of `Blocks.Palette.Length`
+  `src/PlayerSystems.cs:110-111`), Down, Fly toggle, Fine toggle (4×4×4 ↔ 1×1×1 operation
+  volume, §8), hotbar row of `Blocks.Palette.Length`
   buttons (`src/Blocks.cs:40-44`, 9 entries), Q/E rotate. **No** Sprint, Creative or Respawn
   button (rulings in §8). If sprint is ever wanted, the upgrade path is a forward-direction
   double-tap on the stick — zero extra HUD space; do not add a button first.
@@ -79,7 +80,7 @@ a consumer reads is listed above, so nothing else is needed.
 - Created only when `DisplayServer.IsTouchscreenAvailable() || --touch || --touchtest`.
 - Children: `StickArea` + `LookArea` (`Control`, `MouseFilter = Stop`, drawn with
   `DrawCircle` — no textures, no assets), `HBoxContainer` of hotbar `Button`s,
-  Jump / Down / Fly / rotate buttons.
+  Jump / Down / Fly / Fine / rotate buttons.
 - Hidden on desktop because the node is never created: zero cost, nothing to hide.
 - The layout assumes landscape. That is already handled outside this branch: `project.godot`
   carries `window/handheld/orientation=4` (sensor-landscape) in lead-20's
@@ -109,10 +110,11 @@ a consumer reads is listed above, so nothing else is needed.
 
 - `ProcessPriority = 1` so it runs after `Game._Process` (`src/Game.cs:181-350`).
 - Frame-scripted injection at real node rects, no wall-clock assertions.
-- `injection: PushInput (Viewport.PushInput(ev, true); headless down/drag/up reach Control._GuiInput, verified 4.7.2). Gesture checks inject at the HUD's real rects; button checks re-lay the 14 buttons into a 64x64 test grid first (headless viewport is 64x64 and --resolution is ignored there). The HUD's pixel layout is NOT verified headless — only by the tier-B --touch screenshot.`
+- `injection: PushInput (Viewport.PushInput(ev, true); headless down/drag/up reach Control._GuiInput, verified 4.7.2). Gesture checks inject at the HUD's real rects; button checks re-lay the 15 buttons into a 64x64 test grid first (headless viewport is 64x64 and --resolution is ignored there). The HUD's pixel layout is NOT verified headless — only by the tier-B --touch screenshot.`
 - Checks: `hud` / `stick` / `stick-release` / `drag-yaw` / `tap-place` / `hold-mine`
-  (+ real block break in Creative) / `jump` / `fly` / `hotbar` / `rotate` / `classify`
-  (pure function).
+  (+ real block break in Creative) / `jump` / `fly` / `hotbar` / `rotate` / `fine-toggle`
+  / `classify` (pure function). The scenario pins `WorldRules.FineMode = true` in its
+  constructor because the tap-place / hold-mine gates assert single-voxel operations.
 - Exactly one machine line: `scenario touch: PASS|FAIL <detail>`, exit code 0/1 — the
   repo-wide scenario convention (`docs/testing.md:81-82`).
 - `tools/run_game_tests.py` entry: tier A, `argv=["--headless", "--path", ".", "--", "--touchtest"]`,
@@ -172,6 +174,7 @@ All eight questions are decided; nothing here is open.
 | Creative toggle | **No** — debug-only, via CLI/debug flag. |
 | Respawn button | **No** — the existing auto-unstuck covers it (`Move` depenetration, `src/PlayerSystems.cs:172-175`). |
 | Rotate Q/E buttons | **Yes** — 24-orientation placement is a core mechanic and cannot be missing on mobile. |
+| Fine (精雕) toggle | **Yes** — the default 4x4x4 vs 1x1x1 operation volume is a core mechanic and must be reachable on mobile; it writes the same server-authoritative `WorldRules` the CLI `--fine` and key `V` write. |
 | Desktop debug flag | **Yes** — `--touch`, which doubles as the HUD screenshot evidence path. |
 | Tap/hold assignment | Tap = place, hold = break (MC PE style); drag = pure look, no place and no mine. |
 | Hotbar row vs cycle | **Row of 9 buttons** — landscape is locked, the width is there; no cycle key (dead configuration). |
