@@ -20,6 +20,12 @@ Packs may also override individual cube faces with optional `<block>_<suffix>` k
 unaffected; an override's layer is `12 + blockOrdinal*6 + faceIndex`, in the order the spec's
 completeness table lists.
 
+Per-face tiles change *which* texture a face samples, not how it is oriented: a letter or arrow
+still reads differently on each side, because v1 fixes per-face UV orientation as a non-goal and
+requires direction-agnostic art. Making a glyph readable on all four faces needs a per-face UV
+basis table in `ChunkMesher` (a v2 change; see the spec's non-goal table), plus art authored for
+that basis.
+
 ```json
 {
   "version": 1,
