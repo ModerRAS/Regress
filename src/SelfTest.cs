@@ -285,6 +285,7 @@ public static class SelfTest
 		CheckPlacementPreview(world);
 		// ---- block entities (interactive blocks) ------
 		CheckBlockEntities(world);
+		CheckHeartwood(world);
 		CheckMobs(world);
 		CheckTextureVariants(world);
 		CheckSizeClasses(world);
@@ -924,7 +925,7 @@ public static class SelfTest
 			$"Grass allows exactly 4 upright orientations ({grassSize} allowed, {grassUpright} upright)");
 		Check(chestSize == 4 && chestUpright == 4 && Blocks.PolicyOf(Block.Chest) == OrientationPolicy.Upright,
 			$"Chest allows exactly 4 upright orientations ({chestSize} allowed, {chestUpright} upright)");
-		Check(anyBlocks == 7, $"{anyBlocks}/7 non-Grass, non-Chest, non-Pumpkin blocks are Any(24)");
+		Check(anyBlocks == 8, $"{anyBlocks}/8 non-Grass, non-Chest, non-Pumpkin blocks are Any(24)");
 		Check(aliasWrong == 0, $"{LastBlockIndex - aliasWrong}/{LastBlockIndex} blocks answer Allows identically for the identity's two bytes");
 		Check(aliasUnmirrored == 0, "the semantic mask always mirrors byte 9 from byte 0");
 		Check(Blocks.OrientationMask(Block.Stone) == (1u << (Orientation.Count + 1)) - 1u,
@@ -1024,7 +1025,7 @@ public static class SelfTest
 				: Placement.None;
 			if (Blocks.PlacementOf(block) != want) placementWrong++;
 		}
-		Check(placementWrong == 0, "PlacementOf is Axis for Wood, Face for Chest and Pumpkin, and None for the other 7 types");
+		Check(placementWrong == 0, "PlacementOf is Axis for Wood, Face for Chest and Pumpkin, and None for the other 8 types");
 
 		int noneDefault = 0;
 		for (int f = 0; f < 6; f++)
@@ -1401,10 +1402,11 @@ public static class SelfTest
 		// declares the six chest overrides. Load it explicitly so this map check is deterministic.
 		TexPack.Load("res://texturepacks/default");
 
-		// The frozen 60-cell fallback table from docs/texture-packs.md, rows by (int)Block,
-		// cols by Face. The six chest cells' frozen fallback is the plank row (8) and the six
-		// pumpkin cells' is the sand row (5); the default pack's declared overrides resolve the
-		// chest cells to 60..65 and the pumpkin cells to 66..71 instead (resolved != fallback).
+		// The frozen 66-cell fallback table from docs/texture-packs.md, rows by (int)Block,
+		// cols by Face. The six chest cells' frozen fallback is the plank row (8), the six
+		// pumpkin cells' is the sand row (5) and the six heartwood cells' is the wood_top row (7);
+		// the default pack's declared overrides resolve the chest cells to 60..65, the pumpkin
+		// cells to 66..71 and the heartwood cells to 72..77 instead (resolved != fallback).
 		int[,] expected =
 		{
 			{ 11, 11, 11, 11, 11, 11 }, // Air: never meshed -> missing (magenta)
@@ -1418,6 +1420,7 @@ public static class SelfTest
 			{ 10, 10, 10, 10, 10, 10 }, // Bedrock
 			{ 8, 8, 8, 8, 8, 8 },       // Chest: fallback is the plank row, overridden to 60..65 by the default pack
 			{ 5, 5, 5, 5, 5, 5 },       // Pumpkin: fallback is the sand row, overridden to 66..71 by the default pack
+			{ 7, 7, 7, 7, 7, 7 },       // Heartwood: fallback is wood_top, overridden to 72..77 by the default pack
 		};
 		int bad = 0;
 		for (int b = 0; b <= LastBlockIndex; b++)
@@ -1425,14 +1428,15 @@ public static class SelfTest
 			{
 				// The frozen row is what a pack without face overrides resolves to (asserted by
 				// CheckFaceOverrides / CheckTextureVariants' base-only packs); the default pack's
-				// declared overrides win, so the resolved cells are KeyCount + 48 + f for Chest
-				// and KeyCount + 54 + f for Pumpkin.
+				// declared overrides win, so the resolved cells are KeyCount + 48 + f for Chest,
+				// KeyCount + 54 + f for Pumpkin and KeyCount + 60 + f for Heartwood.
 				int want = (Block)b == Block.Chest ? TexPack.KeyCount + 48 + f
 					: (Block)b == Block.Pumpkin ? TexPack.KeyCount + 54 + f
+					: (Block)b == Block.Heartwood ? TexPack.KeyCount + 60 + f
 					: expected[b, f];
 				if (TexPack.TileIndex((Block)b, f) != want) bad++;
 			}
-		Check(bad == 0, $"60-cell Block+Face map: 54 frozen cells + chest overrides at 60..65 + pumpkin overrides at 66..71 ({bad} wrong)");
+		Check(bad == 0, $"66-cell Block+Face map: 54 frozen cells + chest overrides at 60..65 + pumpkin overrides at 66..71 + heartwood overrides at 72..77 ({bad} wrong)");
 		Check(TexPack.TileIndex(Block.Bedrock, Face.Top) == 10,
 			"bedrock is covered from the Block enum, not Blocks.Palette");
 	}
@@ -1442,7 +1446,7 @@ public static class SelfTest
 		string baseDir = ProjectSettings.GlobalizePath("user://texpack_selftest");
 		if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
 
-		// The frozen 60-cell table, rows by Renderable order, cols by Face (PosX..NegZ).
+		// The frozen 66-cell table, rows by Renderable order, cols by Face (PosX..NegZ).
 		int[] frozen =
 		{
 			0, 0, 0, 0, 0, 0,        // Stone
@@ -1455,6 +1459,7 @@ public static class SelfTest
 			10, 10, 10, 10, 10, 10,  // Bedrock
 			8, 8, 8, 8, 8, 8,        // Chest: frozen fallback is the plank row
 			5, 5, 5, 5, 5, 5,        // Pumpkin: frozen fallback is the sand row
+			7, 7, 7, 7, 7, 7,        // Heartwood: frozen fallback is the wood_top row
 		};
 
 		// (a) A base-only pack resolves every cell to the frozen table.
@@ -1465,10 +1470,10 @@ public static class SelfTest
 		int wrong = FrozenMismatches(frozen);
 		Check(plain.Source == baseOnly && plain.FaceOverrides == 0 && plain.Array.GetLayers() == TexPack.KeyCount
 			&& wrong == 0,
-			$"base-only pack keeps the frozen 60-cell map in {TexPack.KeyCount} layers ({wrong} wrong)");
+			$"base-only pack keeps the frozen 66-cell map in {TexPack.KeyCount} layers ({wrong} wrong)");
 		Check(TexPack.TileIndex(Block.Air, 0) == 11, "Air still resolves to the missing tile (11)");
 
-		// (b) `stone_top` claims cell 2 as layer KeyCount + 2; the other 59 cells hold.
+		// (b) `stone_top` claims cell 2 as layer KeyCount + 2; the other 65 cells hold.
 		string faceOne = baseDir + "/faceone";
 		WritePack(faceOne, 1, AllTiles() + ", \"stone_top\": \"tiles/stone_top.png\"");
 		for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(faceOne, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
@@ -1517,19 +1522,21 @@ public static class SelfTest
 			$"a later base-only pack clears the override ({wrong} wrong)");
 
 		// (iii) The pack-less fall-through commits the fall-through pack's own table. Rung 3 is
-		// res://texturepacks/default here, which since Chest and Pumpkin ship their own six
-		// overrides each resolves those twelve cells at KeyCount + cell (48..53 chest, 54..59
-		// pumpkin); every other cell is the frozen base. What this pins is that no override from
-		// the previously loaded pack survives.
+		// res://texturepacks/default here, which since Chest, Pumpkin and Heartwood ship their own
+		// six overrides each resolves those eighteen cells at KeyCount + cell (48..53 chest,
+		// 54..59 pumpkin, 60..65 heartwood); every other cell is the frozen base. What this pins
+		// is that no override from the previously loaded pack survives.
 		var fallback = TexPack.Load(baseDir + "/does_not_exist");
 		int stale = 0;
 		for (int b = 0; b < TexPack.Renderable.Length; b++)
 			for (int f = 0; f < 6; f++)
 			{
 				var block = TexPack.Renderable[b];
-				int want = fallback.Procedural || block is not (Block.Chest or Block.Pumpkin)
+				int want = fallback.Procedural || block is not (Block.Chest or Block.Pumpkin or Block.Heartwood)
 					? frozen[b * 6 + f]
-					: block == Block.Chest ? TexPack.KeyCount + 48 + f : TexPack.KeyCount + 54 + f;
+					: block == Block.Chest ? TexPack.KeyCount + 48 + f
+					: block == Block.Pumpkin ? TexPack.KeyCount + 54 + f
+					: TexPack.KeyCount + 60 + f;
 				if (TexPack.TileIndex(block, f) != want) stale++;
 			}
 		Check((fallback.Procedural || fallback.Source == "res://texturepacks/default")
@@ -1539,7 +1546,7 @@ public static class SelfTest
 		if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
 	}
 
-	/// <summary>How many of the 60 (Block,Face) cells disagree with the frozen literal table.</summary>
+	/// <summary>How many of the 66 (Block,Face) cells disagree with the frozen literal table.</summary>
 	private static int FrozenMismatches(int[] frozen)
 	{
 		int wrong = 0;
@@ -2122,7 +2129,8 @@ public static class SelfTest
 		if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
 
 		// E4: no-variant packs keep the pre-variants layout — layer numbers, not "it renders".
-		// 60 cells: the Chest row's fallback is the plank row (8) and Pumpkin's is the sand row (5), same as the frozen table.
+		// 66 cells: the Chest row's fallback is the plank row (8), Pumpkin's is the sand row (5)
+		// and Heartwood's is the wood_top row (7), same as the frozen table.
 		int[] frozen =
 		{
 			0, 0, 0, 0, 0, 0,        // Stone
@@ -2135,6 +2143,7 @@ public static class SelfTest
 			10, 10, 10, 10, 10, 10,  // Bedrock
 			8, 8, 8, 8, 8, 8,        // Chest: frozen fallback is the plank row
 			5, 5, 5, 5, 5, 5,        // Pumpkin: frozen fallback is the sand row
+			7, 7, 7, 7, 7, 7,        // Heartwood: frozen fallback is the wood_top row
 		};
 		string baseOnly = baseDir + "/varbase";
 		WritePack(baseOnly, 1, AllTiles());
@@ -2167,7 +2176,7 @@ public static class SelfTest
 				if (got.Length != 1 || got[0] != want) wrong++;
 			}
 		Check(wrong == 0 && over.Array.GetLayers() == TexPack.LayerCount && over.Layers == TexPack.LayerCount,
-			$"E4 override pack: stone_top owns layer {TexPack.KeyCount + 2}, the other 59 cells stay frozen ({wrong} wrong)");
+			$"E4 override pack: stone_top owns layer {TexPack.KeyCount + 2}, the other 65 cells stay frozen ({wrong} wrong)");
 
 		// A variant pack changes the array size: stone x4 + 11 singles = 15 layers.
 		string varied = baseDir + "/var4";
@@ -2284,7 +2293,7 @@ public static class SelfTest
 		string baseDir = ProjectSettings.GlobalizePath("user://texpack_selftest");
 		if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
 
-		// The frozen 60-cell table, rows by Renderable order, cols by Face (PosX..NegZ).
+		// The frozen 66-cell table, rows by Renderable order, cols by Face (PosX..NegZ).
 		int[] frozen =
 		{
 			0, 0, 0, 0, 0, 0,        // Stone
@@ -2297,6 +2306,7 @@ public static class SelfTest
 			10, 10, 10, 10, 10, 10,  // Bedrock
 			8, 8, 8, 8, 8, 8,        // Chest: frozen fallback is the plank row
 			5, 5, 5, 5, 5, 5,        // Pumpkin: frozen fallback is the sand row
+			7, 7, 7, 7, 7, 7,        // Heartwood: frozen fallback is the wood_top row
 		};
 
 		// E10: the real default pack is one class; the old cells are byte-identical to the
@@ -2310,6 +2320,7 @@ public static class SelfTest
 				var block = TexPack.Renderable[b];
 				int want = block == Block.Chest ? TexPack.KeyCount + 48 + f
 					: block == Block.Pumpkin ? TexPack.KeyCount + 54 + f
+					: block == Block.Heartwood ? TexPack.KeyCount + 60 + f
 					: frozen[b * 6 + f];
 				if (TexPack.TileAt(TexPack.Renderable[b], f, 0, 0, 0).Class != 0) classWrong++;
 				if (TexPack.TileIndex(TexPack.Renderable[b], f) != want) mapWrong++;
@@ -2321,9 +2332,9 @@ public static class SelfTest
 		Check(def.Source == defaultPack && def.Classes == 1 && def.Arrays.Length == 1
 			&& def.Array.GetLayers() == TexPack.LayerCount && def.Layers == TexPack.LayerCount
 			&& def.ClassLayers[0] == TexPack.LayerCount && def.ClassSizes[0] == def.TileSize
-			&& def.FaceOverrides == 12
-			&& classWrong == 0 && mapWrong == 0 && layerWrong == 0 && defPng == TexPack.KeyCount + 12,
-			$"E10 default pack: 1 size class, {TexPack.LayerCount} layers, {defPng} Png, 12/60 chest+pumpkin overrides "
+			&& def.FaceOverrides == 18
+			&& classWrong == 0 && mapWrong == 0 && layerWrong == 0 && defPng == TexPack.KeyCount + 18,
+			$"E10 default pack: 1 size class, {TexPack.LayerCount} layers, {defPng} Png, 18/66 chest+pumpkin+heartwood overrides "
 			+ $"({mapWrong} map, {layerWrong} layer)");
 
 		// E11: 3 classes (16/32/64). Every face routes to its key's class, the class edge is the
@@ -3201,16 +3212,17 @@ public static class SelfTest
 		for (int i = 0; keysMatch && i < canonicalKeys.Length; i++) keysMatch = TexPack.Keys[i] == canonicalKeys[i];
 		Check(keysMatch, $"the 12 canonical keys are unchanged and in frozen order (KeyCount={TexPack.KeyCount})");
 
-		// V2: Renderable is append-only: the 8 old blocks first, Chest at 8, Pumpkin at 9.
+		// V2: Renderable is append-only: the 8 old blocks first, Chest at 8, Pumpkin at 9, Heartwood at 10.
 		Block[] oldRenderable = { Block.Stone, Block.Dirt, Block.Grass, Block.Sand, Block.Wood, Block.Plank, Block.Leaves, Block.Bedrock };
-		bool renderableMatch = TexPack.Renderable.Length == 10 && TexPack.Renderable[8] == Block.Chest
-			&& TexPack.Renderable[9] == Block.Pumpkin;
+		bool renderableMatch = TexPack.Renderable.Length == 11 && TexPack.Renderable[8] == Block.Chest
+			&& TexPack.Renderable[9] == Block.Pumpkin && TexPack.Renderable[10] == Block.Heartwood;
 		for (int i = 0; renderableMatch && i < oldRenderable.Length; i++) renderableMatch = TexPack.Renderable[i] == oldRenderable[i];
-		Check(renderableMatch, $"Renderable appends Chest at 8 and Pumpkin at 9 after the old 8 in order (length={TexPack.Renderable.Length})");
+		Check(renderableMatch, $"Renderable appends Chest at 8, Pumpkin at 9 and Heartwood at 10 after the old 8 in order (length={TexPack.Renderable.Length})");
 
-		// V3: the 60-cell frozen fallback table lives once, in CheckTileIndexMap; its Chest row
-		// is 8 (plank) and its Pumpkin row is 5 (sand). The default pack declares the six chest
-		// and six pumpkin overrides, so the resolved indices are 60..71 — the base-only packs in
+		// V3: the 66-cell frozen fallback table lives once, in CheckTileIndexMap; its Chest row
+		// is 8 (plank), its Pumpkin row is 5 (sand) and its Heartwood row is 7 (wood_top). The
+		// default pack declares the six chest, six pumpkin and six heartwood overrides, so the
+		// resolved indices are 60..77 — the base-only packs in
 		// CheckFaceOverrides/CheckTextureVariants assert the fallback rows themselves.
 		var chestPack = TexPack.Load("res://texturepacks/default");
 		bool chestResolved = true;
@@ -3219,20 +3231,23 @@ public static class SelfTest
 		Check(chestResolved,
 			$"resolved default pack: the six chest overrides win at layers {TexPack.KeyCount + 48}..{TexPack.KeyCount + 53} (fallback row is 8)");
 
-		// V4: the vocabulary grows by twelve face keys; layer space is 72.
+		// V4: the vocabulary grows by eighteen face keys; layer space is 78.
 		string[] chestFaceKeys = { "chest_posx", "chest_negx", "chest_top", "chest_bottom", "chest_posz", "chest_negz" };
 		string[] pumpkinFaceKeys = { "pumpkin_posx", "pumpkin_negx", "pumpkin_top", "pumpkin_bottom", "pumpkin_posz", "pumpkin_negz" };
-		bool faceKeysMatch = TexPack.FaceKeys.Length == 60 && TexPack.LayerCount == 72;
+		string[] heartwoodFaceKeys = { "heartwood_posx", "heartwood_negx", "heartwood_top", "heartwood_bottom", "heartwood_posz", "heartwood_negz" };
+		bool faceKeysMatch = TexPack.FaceKeys.Length == 66 && TexPack.LayerCount == 78;
 		for (int f = 0; faceKeysMatch && f < 6; f++)
-			faceKeysMatch = TexPack.FaceKeys[48 + f] == chestFaceKeys[f] && TexPack.FaceKeys[54 + f] == pumpkinFaceKeys[f];
-		Check(faceKeysMatch, $"FaceKeys appends the six chest keys at 48..53 and the six pumpkin keys at 54..59, LayerCount is 72 (len={TexPack.FaceKeys.Length}, layers={TexPack.LayerCount})");
+			faceKeysMatch = TexPack.FaceKeys[48 + f] == chestFaceKeys[f] && TexPack.FaceKeys[54 + f] == pumpkinFaceKeys[f]
+				&& TexPack.FaceKeys[60 + f] == heartwoodFaceKeys[f];
+		Check(faceKeysMatch, $"FaceKeys appends the six chest keys at 48..53, the six pumpkin keys at 54..59 and the six heartwood keys at 60..65, LayerCount is 78 (len={TexPack.FaceKeys.Length}, layers={TexPack.LayerCount})");
 
-		// V5: the shipped default pack carries the chest and pumpkin art.
-		bool chestArtLoaded = chestPack.FaceOverrides == 12 && chestPack.Layers == 72;
+		// V5: the shipped default pack carries the chest, pumpkin and heartwood art.
+		bool chestArtLoaded = chestPack.FaceOverrides == 18 && chestPack.Layers == 78;
 		for (int f = 0; chestArtLoaded && f < 6; f++)
 			chestArtLoaded = chestPack.Sources[60 + f] == TexPack.TileSource.Png
-				&& chestPack.Sources[66 + f] == TexPack.TileSource.Png;
-		Check(chestArtLoaded, $"the default pack ships 12/60 chest+pumpkin overrides as Png in class 0 ({chestPack.FaceOverrides} overrides, {chestPack.Layers} layers)");
+				&& chestPack.Sources[66 + f] == TexPack.TileSource.Png
+				&& chestPack.Sources[72 + f] == TexPack.TileSource.Png;
+		Check(chestArtLoaded, $"the default pack ships 18/66 chest+pumpkin+heartwood overrides as Png in class 0 ({chestPack.FaceOverrides} overrides, {chestPack.Layers} layers)");
 
 		// V6: an override really wins over the fallback; {8} here would be the bug.
 		string chestLayers = "";
@@ -3247,8 +3262,8 @@ public static class SelfTest
 
 		// ---- P1..P6: Pumpkin vocabulary -----------------------------------------
 		// P1: append-only ordinal; the six new frozen 5s are asserted by the literal tables above.
-		Check(TexPack.Renderable[^1] == Block.Pumpkin,
-			"P1 Renderable is append-only: Pumpkin lands last after the old 8 + Chest (its six frozen cells read 5/sand in the literal tables)");
+		Check(TexPack.Renderable[^2] == Block.Pumpkin && TexPack.Renderable[^1] == Block.Heartwood,
+			"P1 Renderable is append-only: Pumpkin stays second-last and Heartwood lands last (its six frozen cells read 7/wood_top in the literal tables)");
 
 		// P2: the default pack's pumpkin_<face> overrides win over the sand fallback.
 		string pumpkinLayers = "";
@@ -3359,5 +3374,83 @@ public static class SelfTest
 		byte snappedChest = Blocks.Snap(Block.Chest, nonUpright);
 		Check(Orientation.ImageOfLocalAxis(nonUpright, 1) != Vector3I.Up && Blocks.Allows(Block.Chest, snappedChest),
 			$"C7 Snap(Chest, a non-upright candidate) still yields an allowed orientation ({snappedChest})");
+	}
+
+	/// <summary>Heartwood: the append-only vocabulary tail, the default pack's six overrides,
+	/// zero registry cost, and the trunk content invariant (Wood shell, Heartwood core).</summary>
+	private static void CheckHeartwood(VoxelWorld world)
+	{
+		GD.Print("  ---- heartwood ----");
+
+		// H1: append-only ordinal and the type table.
+		Check((int)Block.Heartwood == (int)Block.Pumpkin + 1 && TexPack.Renderable[^1] == Block.Heartwood,
+			"H1 Heartwood appends after Pumpkin: ordinal +1 and last Renderable entry");
+		Check(Array.IndexOf(Blocks.Palette, Block.Heartwood) < 0 && Blocks.HardnessOf(Block.Heartwood) > 0f
+			&& Blocks.PlacementOf(Block.Heartwood) == Placement.None
+			&& Blocks.PolicyOf(Block.Heartwood) == OrientationPolicy.Any,
+			"H1 Heartwood is outside the Palette, breakable, Placement.None and OrientationPolicy.Any");
+
+		// H2/H3: the default pack's declared overrides beat the frozen wood_top fallback.
+		var pack = TexPack.Load("res://texturepacks/default");
+		int resolvedWrong = 0, layersWrong = 0, artWrong = 0;
+		for (int f = 0; f < 6; f++)
+		{
+			if (TexPack.TileIndex(Block.Heartwood, f) != 72 + f) resolvedWrong++;
+			var layers = TexPack.LayersFor(Block.Heartwood, f);
+			if (layers.Length != 1 || layers[0] != 72 + f) layersWrong++;
+			if (pack.Sources[72 + f] != TexPack.TileSource.Png) artWrong++;
+		}
+		Check(resolvedWrong == 0 && layersWrong == 0,
+			$"H2 default pack: Heartwood resolves to one layer per face at 72..77 ({resolvedWrong} index, {layersWrong} layer wrong)");
+		Check(artWrong == 0, $"H3 the default pack ships the six heartwood override layers as Png ({artWrong} wrong)");
+
+		// H4: non-interactive, so a place + break costs the registry nothing.
+		var registry = world.BlockEntities;
+		static int VisitCount(BlockEntityRegistry r)
+		{
+			int n = 0;
+			r.Visit((_, _) => n++);
+			return n;
+		}
+		Check(BlockInteractions.KindOf(Block.Heartwood) == InteractKind.None && !BlockInteractions.IsInteractable(Block.Heartwood),
+			"H4 Heartwood is not interactive");
+		int countBefore = registry.Count, bucketsBefore = registry.ChunkBucketCount, visitedBefore = VisitCount(registry);
+		var inertCell = new Vector3I(40000 + 144, 3000, 40000);
+		world.SetBlock(inertCell.X, inertCell.Y, inertCell.Z, Block.Heartwood);
+		world.SetBlock(inertCell.X, inertCell.Y, inertCell.Z, Block.Air);
+		Check(registry.Count == countBefore && registry.ChunkBucketCount == bucketsBefore && VisitCount(registry) == visitedBefore,
+			$"H4 a Heartwood place + break creates no entity ({registry.Count} entities, {registry.ChunkBucketCount} buckets unchanged)");
+
+		// H5: the trunk content invariant on a real generated tree.
+		int ax = 0, az = 0;
+		bool found = false;
+		for (int z = -64; z <= 64 && !found; z++)
+			for (int x = -64; x <= 64 && !found; x++)
+				if (world.Terrain.TryGetTree(x, z, out _)) { ax = x; az = z; found = true; }
+		Check(found, "H5 a real tree anchor exists near spawn");
+		if (!found) return;
+		world.Terrain.TryGetTree(ax, az, out var spec);
+		int y = spec.MinY + 1;
+		for (int ox = -2; ox <= 1; ox++)
+			for (int oz = -2; oz <= 1; oz++)
+				world.CreateChunk(VoxelWorld.ChunkKeyOf(spec.AnchorX + ox, y, spec.AnchorZ + oz));
+		int wrong = 0;
+		for (int ox = -2; ox <= 1; ox++)
+			for (int oz = -2; oz <= 1; oz++)
+			{
+				bool ring = ox == -2 || ox == 1 || oz == -2 || oz == 1;
+				var got = world.GetBlock(spec.AnchorX + ox, y, spec.AnchorZ + oz);
+				if (ring ? got != Block.Wood : got != Block.Heartwood) wrong++;
+			}
+		Check(wrong == 0, $"H5 a generated trunk is a 1-voxel Wood shell around a 2x2 Heartwood core ({wrong} wrong of 16)");
+		for (int ox = -2; ox <= 1; ox++)
+			for (int oz = -2; oz <= 1; oz++)
+				if (ox == -2 || ox == 1 || oz == -2 || oz == 1)
+					world.SetBlock(spec.AnchorX + ox, y, spec.AnchorZ + oz, Block.Air);
+		int coreWrong = 0;
+		for (int ox = -1; ox <= 0; ox++)
+			for (int oz = -1; oz <= 0; oz++)
+				if (world.GetBlock(spec.AnchorX + ox, y, spec.AnchorZ + oz) != Block.Heartwood) coreWrong++;
+		Check(coreWrong == 0, $"H5 a chopped trunk exposes its heartwood cross-section, not bark ({coreWrong} wrong of 4)");
 	}
 }
