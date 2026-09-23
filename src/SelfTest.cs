@@ -209,8 +209,286 @@ public static class SelfTest
         CheckMesherTextureArrays(world);
         CheckMesherOrientation(world);
         CheckPlacementPreview(world);
+        CheckMobs(world);
 
         return _failures;
+    }
+
+    /// <summary>Mobs: deterministic spawning, lightweight AABB movement and pure AI rules.
+    /// Every check here can fail.</summary>
+    private static void CheckMobs(VoxelWorld world)
+    {
+        GD.Print("  ---- mobs ----");
+
+        Check(MobSystems.Tick(world, 1f / 60f) == 0.0, "zero mobs: Tick returns exactly 0.0 ms");
+
+        // -- the plan is pure and deterministic ---------------------------
+        var planA = MobSpawner.Plan(1337, 5, -3);
+        var planB = MobSpawner.Plan(1337, 5, -3);
+        bool samePlan = planA.Count == planB.Count && planA.Count > 0;
+        for (int i = 0; samePlan && i < planA.Count; i++) samePlan = planA[i] == planB[i];
+        Check(samePlan, $"spawn plan is deterministic ({planA.Count} candidates)");
+
+        int offRing = 0, unsorted = 0;
+        long previous = long.MinValue;
+        for (int i = 0; i < planA.Count; i++)
+        {
+            int dx = planA[i].X - 5, dz = planA[i].Z + 3;
+            int ring = Math.Max(Math.Abs(dx), Math.Abs(dz));
+            if (ring < MobSpawner.SpawnRadius || ring > MobSpawner.SpawnRadius + MobSpawner.SpawnRingWidth) offRing++;
+            if (MobSpawner.CellHash(1337, planA[i].X, planA[i].Z) % 8 != 0) offRing++;
+            long distance = (long)dx * dx + (long)dz * dz;
+            if (distance < previous) unsorted++;
+            previous = distance;
+        }
+        Check(offRing == 0, $"{planA.Count}/{planA.Count} candidates sit on selected ring cells");
+        Check(unsorted == 0, "plan is sorted nearest-first");
+
+        // -- two worlds, same seed and focus, same mobs -------------------
+        var worldA = MakeMobWorld();
+        var worldB = MakeMobWorld();
+        var positionsA = SimulateMobs(worldA, 30);
+        var positionsB = SimulateMobs(worldB, 30);
+        bool identical = positionsA.Length == positionsB.Length && positionsA.Length > 0;
+        for (int i = 0; identical && i < positionsA.Length; i++) identical = positionsA[i] == positionsB[i];
+        Check(identical, $"two worlds, same seed + focus: {positionsA.Length} mobs at identical positions after 30 ticks");
+        worldA.Free();
+        worldB.Free();
+
+        // -- cap, node wiring and a 300-tick population -------------------
+        var capWorld = MakeMobWorld();
+        capWorld.EnsureAreaAround(capWorld.FindSpawn(), 3);
+        capWorld.Focus = new Vector3(0.5f, 0f, 0.5f);
+        for (int i = 0; i < 200; i++)
+        {
+            MobSystems.Spawn(capWorld);
+            MobSystems.Tick(capWorld, 1f / 60f);
+        }
+        int spawned = MobSpawner.Count(capWorld.Store);
+        Check(spawned == MobSystems.MaxMobs, $"cap respected after 200 spawn ticks ({spawned}/{MobSystems.MaxMobs})");
+
+        bool parented = true, sharedView = true;
+        MeshInstance3D firstNode = null;
+        capWorld.Store.Query<MobVisual>().AllTags(Tags.Get<Mob>())
+            .ForEachEntity((ref MobVisual visual, Entity entity) =>
+            {
+                if (visual.Node == null) { parented = false; return; }
+                if (firstNode == null) firstNode = visual.Node;
+                else if (visual.Node.Mesh != firstNode.Mesh
+                    || visual.Node.MaterialOverride != firstNode.MaterialOverride) sharedView = false;
+                if (visual.Node.GetParent() != capWorld) parented = false;
+            });
+        Check(parented && sharedView, "mob nodes are children of the world and share one mesh + material");
+
+        for (int i = 0; i < 300; i++) MobSystems.Tick(capWorld, 1f / 60f);
+        int after = MobSpawner.Count(capWorld.Store), grounded = 0, stillInside = 0;
+        capWorld.Store.Query<MobXform, MobVelocity>().AllTags(Tags.Get<Mob>())
+            .ForEachEntity((ref MobXform xform, ref MobVelocity velocity, Entity entity) =>
+            {
+                if (!MobAiRules.MobFits(capWorld, xform.Position.X, xform.Position.Y, xform.Position.Z)) stillInside++;
+                if (velocity.Value.Y == 0f) grounded++;
+            });
+        GD.Print($"mobs: {after} spawned, {grounded} grounded, {stillInside} inside geometry");
+        Check(after == spawned && stillInside == 0,
+            $"300 ticks: 0 mobs inside geometry ({after} mobs, {stillInside} inside)");
+        capWorld.Free();
+
+        // -- a dropped mob lands and stays on the ground ------------------
+        var dropWorld = MakeMobWorld();
+        dropWorld.EnsureAreaAround(dropWorld.FindSpawn(), 0);
+        dropWorld.Focus = new Vector3(0.5f, 0f, 0.5f);
+        int surface = dropWorld.HeightAt(0, 0);
+        var dropped = dropWorld.Store.CreateEntity(
+            new MobXform { Position = new Vector3(0.5f, surface + 6f, 0.5f) },
+            new MobVelocity(),
+            new MobAi { Rng = 77, TargetX = 0.5f, TargetZ = 0.5f, Retarget = 0f },
+            new MobVisual(),
+            Tags.Get<Mob>());
+        for (int i = 0; i < 180; i++) MobSystems.Tick(dropWorld, 1f / 60f);
+        ref var droppedXform = ref dropped.GetComponent<MobXform>();
+        var droppedVelocity = dropped.GetComponent<MobVelocity>();
+        int feetX = Mathf.FloorToInt(droppedXform.Position.X);
+        int feetY = Mathf.FloorToInt(droppedXform.Position.Y);
+        int feetZ = Mathf.FloorToInt(droppedXform.Position.Z);
+        Check(!Blocks.IsSolid(dropWorld.GetBlock(feetX, feetY, feetZ))
+            && Blocks.IsSolid(dropWorld.GetBlock(feetX, feetY - 1, feetZ))
+            && droppedVelocity.Value.Y == 0f,
+            $"a dropped mob settles on the surface (y={droppedXform.Position.Y:F2}, surface={surface})");
+        dropWorld.Free();
+
+        // -- despawn: out of range or out of the world --------------------
+        var leaveWorld = MakeMobWorld();
+        leaveWorld.EnsureAreaAround(leaveWorld.FindSpawn(), 2);
+        leaveWorld.Focus = new Vector3(0.5f, 0f, 0.5f);
+        for (int i = 0; i < 10 && MobSpawner.Count(leaveWorld.Store) == 0; i++) MobSystems.Spawn(leaveWorld);
+        Entity leaver = FirstMob(leaveWorld.Store);
+        var leaverNode = leaver.GetComponent<MobVisual>().Node;
+        leaver.GetComponent<MobXform>().Position = new Vector3(100.5f, 50f, 0.5f);
+        int beforeLeave = MobSpawner.Count(leaveWorld.Store);
+        MobSystems.Spawn(leaveWorld);
+        Check(beforeLeave >= 1 && leaver.IsNull && leaverNode.IsQueuedForDeletion(),
+            $"a mob past DespawnRadius is deleted with its node ({beforeLeave} before)");
+
+        var faller = leaveWorld.Store.CreateEntity(
+            new MobXform { Position = new Vector3(0.5f, leaveWorld.BedrockY - 17f, 0.5f) },
+            new MobVelocity(),
+            new MobAi { Rng = 11 },
+            new MobVisual(),
+            Tags.Get<Mob>());
+        MobSystems.Spawn(leaveWorld);
+        Check(faller.IsNull, $"a mob below BedrockY - 16 is deleted");
+        leaveWorld.Free();
+
+        // -- AI is a pure function ----------------------------------------
+        var air = new TestBlocks();
+
+        var wall = new TestBlocks();
+        wall.Solid.Add((2, 0, 0));
+        var aiTarget = new MobAi { Rng = 12345, TargetX = 2.5f, TargetZ = 0.5f, Retarget = 100f };
+        MobAiRules.Decide(wall, ref aiTarget, 0.5f, 0f, 0.5f, 100f, 0f, 0.5f, 1f / 60f);
+        bool repicked = aiTarget.TargetX != 2.5f || aiTarget.TargetZ != 0.5f;
+        bool targetFree = !wall.Solid.Contains((Mathf.FloorToInt(aiTarget.TargetX), 0, Mathf.FloorToInt(aiTarget.TargetZ)));
+        Check(repicked && targetFree, $"a wander target inside a block is re-picked ({aiTarget.TargetX:F2}, {aiTarget.TargetZ:F2})");
+
+        var aiApproach = new MobAi { Rng = 3 };
+        var approach = MobAiRules.Decide(air, ref aiApproach, 0.5f, 0f, 0.5f, 5.5f, 0f, 0.5f, 1f / 60f);
+        Check(approach.DirX > 0.99f && MathF.Abs(approach.DirZ) < 0.01f,
+            $"inside ReactRadius the mob approaches the player ({approach.DirX:F2}, {approach.DirZ:F2})");
+
+        var aiDiagonal = new MobAi { Rng = 4 };
+        var diagonal = MobAiRules.Decide(air, ref aiDiagonal, 0.5f, 0f, 0.5f, 8.5f, 0f, 6.5f, 1f / 60f);
+        float dot = diagonal.DirX * 8f + diagonal.DirZ * 6f;
+        Check(dot > 0f, $"off-axis approach points at the player (dot={dot:F2})");
+
+        var aiWander = new MobAi { Rng = 777 };
+        var wander = MobAiRules.Decide(air, ref aiWander, 0.5f, 0f, 0.5f, 100f, 0f, 100f, 1f / 60f);
+        float targetDistance = new Vector2(aiWander.TargetX - 0.5f, aiWander.TargetZ - 0.5f).Length();
+        Check(targetDistance > 0f && targetDistance <= MobAiRules.WanderRadius + 0.001f,
+            $"far from the player a fresh target stays inside WanderRadius ({targetDistance:F2})");
+        Check(aiWander.Retarget == MobAiRules.RetargetSeconds, "a new wander target resets the retarget timer");
+
+        var copyWander = new MobAi
+        {
+            Rng = aiWander.Rng,
+            TargetX = aiWander.TargetX,
+            TargetZ = aiWander.TargetZ,
+            Retarget = aiWander.Retarget,
+        };
+        var wanderAgain = MobAiRules.Decide(air, ref copyWander, 0.5f, 0f, 0.5f, 100f, 0f, 100f, 1f / 60f);
+        Check(wanderAgain.DirX == wander.DirX && wanderAgain.DirZ == wander.DirZ
+            && copyWander.TargetX == aiWander.TargetX && copyWander.TargetZ == aiWander.TargetZ,
+            "identical AI state and inputs give an identical move");
+
+        var step = new TestBlocks();
+        step.Solid.Add((1, 0, 0));
+        var aiStep = new MobAi { Rng = 1, TargetX = 8.5f, TargetZ = 0.5f, Retarget = 100f };
+        var stepMove = MobAiRules.Decide(step, ref aiStep, 0.5f, 0f, 0.5f, 100f, 0f, 0.5f, 1f / 60f);
+        Check(stepMove.StepUp && stepMove.DirX > 0.99f, "a one-block step sets StepUp and keeps the direction");
+
+        var blocked = new TestBlocks();
+        blocked.Solid.Add((1, 0, 0));
+        blocked.Solid.Add((1, 1, 0));
+        var aiBlocked = new MobAi { Rng = 1, TargetX = 8.5f, TargetZ = 0.5f, Retarget = 100f };
+        var blockedMove = MobAiRules.Decide(blocked, ref aiBlocked, 0.5f, 0f, 0.5f, 100f, 0f, 0.5f, 1f / 60f);
+        Check(blockedMove.DirX == -1f && blockedMove.DirZ == 0f && !blockedMove.StepUp,
+            $"a two-high wall turns the mob onto the free axis ({blockedMove.DirX}, {blockedMove.DirZ})");
+
+        var sealedBox = new TestBlocks();
+        sealedBox.Solid.Add((1, 0, 0));
+        sealedBox.Solid.Add((1, 1, 0));
+        sealedBox.Solid.Add((-1, 0, 0));
+        sealedBox.Solid.Add((-1, 1, 0));
+        sealedBox.Solid.Add((0, 0, 1));
+        sealedBox.Solid.Add((0, 1, 1));
+        sealedBox.Solid.Add((0, 0, -1));
+        sealedBox.Solid.Add((0, 1, -1));
+        var aiSealed = new MobAi { Rng = 2, TargetX = 8.5f, TargetZ = 0.5f, Retarget = 100f };
+        var sealedMove = MobAiRules.Decide(sealedBox, ref aiSealed, 0.5f, 0f, 0.5f, 100f, 0f, 0.5f, 1f / 60f);
+        Check(sealedMove.DirX == 0f && sealedMove.DirZ == 0f && aiSealed.Retarget == 0f,
+            "a sealed box stops the mob and forces a retarget");
+
+        var rngA = new MobAi { Rng = 424242 };
+        var rngB = new MobAi { Rng = 424242 };
+        bool sequence = true;
+        for (int i = 0; i < 64; i++)
+        {
+            var moveA = MobAiRules.Decide(air, ref rngA, 0.5f, 0f, 0.5f, 100f, 0f, 100f, 1f / 60f);
+            var moveB = MobAiRules.Decide(air, ref rngB, 0.5f, 0f, 0.5f, 100f, 0f, 100f, 1f / 60f);
+            if (moveA.DirX != moveB.DirX || moveA.DirZ != moveB.DirZ || rngA.Rng != rngB.Rng
+                || rngA.TargetX != rngB.TargetX || rngA.TargetZ != rngB.TargetZ)
+            {
+                sequence = false;
+                break;
+            }
+        }
+        Check(sequence && rngA.Rng != 424242, "the same Rng seed yields the same 64-decision sequence");
+
+        Check(MobSpawner.SpawnRadius > MobAiRules.ReactRadius
+            && MobSystems.DespawnRadius > MobSpawner.SpawnRadius,
+            $"mob radii stay ordered: despawn {MobSystems.DespawnRadius} > spawn {MobSpawner.SpawnRadius} > react {MobAiRules.ReactRadius}");
+
+        // -- forced inside solid geometry: one Tick frees the mob ---------
+        var stuckWorld = MakeMobWorld();
+        stuckWorld.EnsureAreaAround(stuckWorld.FindSpawn(), 0);
+        stuckWorld.Focus = new Vector3(0.5f, 0f, 0.5f);
+        int stuckY = stuckWorld.SurfaceY(0, 0);
+        stuckWorld.SetBlock(0, stuckY, 0, Block.Stone);
+        stuckWorld.SetBlock(0, stuckY + 1, 0, Block.Stone);
+        var stuck = stuckWorld.Store.CreateEntity(
+            new MobXform { Position = new Vector3(0.5f, stuckY + 0.2f, 0.5f) },
+            new MobVelocity(),
+            new MobAi { Rng = 55, TargetX = 0.5f, TargetZ = 0.5f, Retarget = 100f },
+            new MobVisual(),
+            Tags.Get<Mob>());
+        MobSystems.Tick(stuckWorld, 1f / 60f);
+        ref var stuckXform = ref stuck.GetComponent<MobXform>();
+        Check(MobAiRules.MobFits(stuckWorld, stuckXform.Position.X, stuckXform.Position.Y, stuckXform.Position.Z),
+            $"a mob forced inside solid is free after one Tick (y={stuckXform.Position.Y:F1})");
+        stuckWorld.Free();
+    }
+
+    private static VoxelWorld MakeMobWorld()
+        => new() { Terrain = new TerrainGenerator(seed: 4242, heightAmplitude: 12) };
+
+    /// <summary>Loads the spawn ring's chunks, then runs spawn/tick/sync for N frames and
+    /// returns mob positions in creation order.</summary>
+    private static Vector3[] SimulateMobs(VoxelWorld world, int ticks)
+    {
+        world.EnsureAreaAround(world.FindSpawn(), 2);
+        world.Focus = new Vector3(0.5f, 0f, 0.5f);
+        for (int i = 0; i < ticks; i++)
+        {
+            MobSystems.Spawn(world);
+            MobSystems.Tick(world, 1f / 60f);
+            MobSystems.SyncVisuals(world.Store);
+        }
+        var positions = new List<Vector3>();
+        world.Store.Query<MobXform>().AllTags(Tags.Get<Mob>())
+            .ForEachEntity((ref MobXform xform, Entity entity) => positions.Add(xform.Position));
+        return positions.ToArray();
+    }
+
+    private static Entity FirstMob(EntityStore store)
+    {
+        Entity first = default;
+        bool seen = false;
+        store.Query<MobXform>().AllTags(Tags.Get<Mob>())
+            .ForEachEntity((ref MobXform xform, Entity entity) =>
+            {
+                if (seen) return;
+                first = entity;
+                seen = true;
+            });
+        return first;
+    }
+
+    /// <summary>Minimal IBlockReader for the pure AI tests: a set of solid cells, air elsewhere.</summary>
+    private sealed class TestBlocks : IBlockReader
+    {
+        public readonly HashSet<(int X, int Y, int Z)> Solid = new();
+
+        public Block GetBlock(int x, int y, int z)
+            => Solid.Contains((x, y, z)) ? Block.Stone : Block.Air;
     }
 
     private static int CountBlocks(VoxelWorld world, Block block)

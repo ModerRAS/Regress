@@ -4,17 +4,18 @@ Regress is an ECS (Friflo.Engine.ECS) voxel sandbox on Godot 4.7 / .NET 8. This 
 describes the entity, component and system design, and — more usefully — the boundaries between
 them and the ones that were deliberately not drawn.
 
-## Entities: two kinds
+## Entities: three kinds
 
 | entity | count | created by | lifetime |
 | --- | --- | --- | --- |
 | **chunk entity** | ~230 resident | `VoxelWorld.CreateChunk`, driven by the streaming system | enters and leaves the view distance |
 | **player entity** | exactly 1 | `Player._Ready` | never destroyed, never changes archetype |
+| **mob entity** | ≤ 48 (`MobSystems.MaxMobs`) | `MobSpawner` (factory), one per planned surface cell | spawns on a ring around `Focus`, despawns past `DespawnRadius` or below `BedrockY - 16` |
 
 There is no entity hierarchy, no relation and no prefab. `ChunkCoord` is 3D, so chunk Y is
 unbounded.
 
-## Components: six data types, four tags
+## Components: eleven data types, five tags
 
 ```csharp
 // chunk: data
@@ -35,6 +36,15 @@ struct PlayerMining { Vector3I Target; float Progress; bool Active; }
 
 // player: tags
 struct PlayerTag : ITag { }
+
+// mob: data
+struct MobXform    { Vector3 Position; float Yaw; }           // feet centre + facing
+struct MobVelocity { Vector3 Value; }
+struct MobAi       { uint Rng; float TargetX, TargetZ, Retarget; }
+struct MobVisual   { MeshInstance3D Node; }
+
+// mob: tag
+struct Mob : ITag { }
 ```
 
 `ChunkBlocks.Orientation` is the 24-element cube rotation group: every block stores one, a block
@@ -68,7 +78,7 @@ Two component details are deliberate deviations from "keep components blittable"
   are engine value types). It is a *handle*, never game state: no system reads gameplay facts out
   of it.
 
-## Systems: four chunk systems, four player systems
+## Systems: four chunk systems, five player systems, three mob systems
 
 **Chunks** — run from `VoxelWorld._Process`, in this order:
 
@@ -87,6 +97,19 @@ Two component details are deliberate deviations from "keep components blittable"
 | `Mine` | `_Process` | `<PlayerIntent, PlayerState, PlayerBody, PlayerMining>` | held LMB + hardness → break request |
 | `Build` | `_Process` | `<PlayerIntent, PlayerState, PlayerBody>` | queued clicks → place request |
 | `Move` | `_PhysicsProcess` | `<PlayerIntent, PlayerState, PlayerBody>` | intent + flying → velocity → `MoveAndSlide` |
+
+**Mobs** — run from `VoxelWorld._Process` after the chunk systems:
+
+| system | query | budget | effect |
+| --- | --- | --- | --- |
+| `Spawn` | `Query<MobXform>` count + the pure `MobSpawner.Plan` | 2 creations/frame, cap 48 | create/delete entities; the node is a handle the factory passes in |
+| `Tick` | `Query<MobXform, MobVelocity, MobAi>.AllTags(Mob)` | **1 ms** | pure `MobAiRules.Decide` → gravity + `MobFits` AABB resolution → write state |
+| `SyncVisuals` | `Query<MobXform, MobVisual>.AllTags(Mob)` | — | node position + yaw only |
+
+Mobs are the deliberate exception to the player's movement design: no `CharacterBody3D`, no
+collision shape, no `MoveAndSlide`. A mob is a few `GetBlock` calls against the same block API
+the player uses, so 48 mobs add no bodies to the physics space (`--bench` keeps `physics step`
+flat while `nodes` grows by one `MeshInstance3D` per mob).
 
 Three rules apply to all of them:
 
@@ -191,7 +214,8 @@ Gameplay never mutates the world; it proposes an edit and the world decides.
    each carries three node pointers for nothing. Splitting rendering into its own component,
    added lazily on first mesh, is the fix.
 2. **The player entity is created by the view** (`Player._Ready`). Factory or system should own
-   entity creation; the view should only supply node handles.
+   entity creation; the view should only supply node handles. Mobs do not repeat this: `MobSpawner`
+   is the factory and the view node is just the handle it stores.
 3. **Systems are static methods taking the store as a parameter**, so there is no per-system
    state or configuration.
 4. **The mesher allocates ~430 KB per chunk** (lists plus `ToArray()` marshalling, now with the

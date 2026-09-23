@@ -11,11 +11,14 @@
 - **Block edits as a request pipeline** — hardness-based mining duration, tree felling via
   `BlockBehaviors`, placement legality in one place.
 - **ECS** — chunk lifecycle expressed as archetypes; see [architecture.md](architecture.md).
-- **Test harness** — `--selftest` (69 assertions), `--demo` (scripted walk / build / mine),
+- **Test harness** — `--selftest` (195 assertions), `--demo` (scripted walk / build / mine),
   `--bench` (five-phase performance run with per-system breakdown), `--shot`, `--map`,
   `--freecam`, `--frozen`, `--diag`.
 - **Texture packs v1** — `pack.json` + twelve keyed tiles, four-rung discovery ending in
   procedural tiles, one shader for every chunk; see [texture-packs.md](texture-packs.md).
+- **Mobs** — up to 48 deterministic wanderers. The AI is a pure, engine-free function over
+  `IBlockReader` (`MobAiRules.Decide`), movement is gravity + AABB instead of `CharacterBody3D`,
+  spawn/despawn follow a seeded square ring around `Focus`.
 
 ## Open work
 
@@ -55,7 +58,8 @@ Hardness and break time exist. The natural next steps all fit the existing reque
 
 ### 3. Parallel work — and why per-world tick is the wrong axis
 
-Measured: the whole ECS tick is **0.03 ms/frame** in steady state, while per-chunk streaming work
+Measured: the whole ECS tick is **0.03 ms/frame** in steady state (0.27 ms with 48 mobs, of
+which the mob systems are 0.13 ms), while per-chunk streaming work
 is ~1.0 ms (mesh 0.61 + collision 0.32 + gen 0.07). Parallelising N *worlds* therefore
 parallelises a few hundredths of a millisecond per world, and the cost worth parallelising happens
 **inside one world** and stays serial.

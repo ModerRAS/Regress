@@ -11,7 +11,7 @@ namespace Regress;
 /// Systems query those archetypes and are budgeted in milliseconds so no frame can spin
 /// on an arbitrary number of variable-cost chunks.
 /// </summary>
-public partial class VoxelWorld : Node3D
+public partial class VoxelWorld : Node3D, IBlockReader
 {
     public const int ChunkSize = 16;
 
@@ -30,6 +30,11 @@ public partial class VoxelWorld : Node3D
     public int ChunkWorkBudgetMs = 3;
     public int ChunksPerFrame = 4;
     public Vector3 Focus;
+
+    // Mob spawn plan cursor for the current focus cell; MobSpawner.Plan itself is pure.
+    internal int MobCursor;
+    internal int MobFocusX = int.MinValue;
+    internal int MobFocusZ = int.MinValue;
 
     // Timings for --bench.
     public double GenMsTotal { get; private set; }
@@ -140,6 +145,10 @@ public partial class VoxelWorld : Node3D
         double colTotal = Prof.Since(t2);
         Prof.ColQuery += colTotal - _colWorkMs;
         Prof.ColWork += _colWorkMs;
+
+        Prof.Mobs += MobSystems.Spawn(this)
+            + MobSystems.Tick(this, (float)delta)
+            + MobSystems.SyncVisuals(Store);
     }
 
     // ---- system 1: streaming --------------------------------------------
