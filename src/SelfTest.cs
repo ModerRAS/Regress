@@ -289,6 +289,7 @@ public static class SelfTest
 		CheckTextureVariants(world);
 		CheckSizeClasses(world);
 		CheckCollisionGate(world);
+		CheckSupportCollision(world);
 
 		return _failures;
 	}
@@ -2719,6 +2720,209 @@ public static class SelfTest
 		probe.DeleteEntity();
 		node.Free();
 		gateWorld.Free();
+	}
+
+	/// <summary>Two invariants that silently regress: (1) the block the player stands on must be
+	/// minable — breakable in the data AND present as a collision face at that same coordinate —
+	/// and (2) every collision body must sit exactly at its section origin with section-local
+	/// geometry. The 4x4x8 capsule's footprint crosses chunk borders, so the landing spot below
+	/// is chosen on a chunk boundary on purpose: the supporting block can come from the
+	/// neighbouring chunk and the check must still find it. The support section may be meshless
+	/// (a fully solid buried one gets a box fallback); the assertion is about coordinates, not
+	/// about which shape kind was chosen.</summary>
+	private static void CheckSupportCollision(VoxelWorld host)
+	{
+		GD.Print("  ---- support collision ----");
+		var world = new VoxelWorld { Terrain = new TerrainGenerator(seed: 4242), ViewDistance = 1 };
+		host.AddChild(world); // collision bodies only register inside the tree
+
+		// Footprint x - 2.5 .. x + 1.5 with x = -0.5 spans the x = 0 chunk border (chunks -1 and 0).
+		const int feetX = -1, feetZ = 40;
+		int surface = world.SurfaceY(feetX, feetZ);
+		var focus = new Vector3(feetX + 0.5f, surface, feetZ + 0.5f);
+		world.Focus = focus;
+		world.EnsureAreaAround(focus, 1);
+		RunFrames(world, 200);
+
+		Check(VoxelWorld.FloorDiv(feetX - 2, VoxelWorld.ChunkSize) != VoxelWorld.FloorDiv(feetX + 1, VoxelWorld.ChunkSize),
+			"the landing footprint spans two chunks");
+
+		// Support = the topmost solid block anywhere in the footprint, exactly how the capsule
+		// finds its perch; the centre column itself may be a void (cliff edge).
+		int supportX = feetX, supportY = int.MinValue, supportZ = feetZ;
+		for (int dz = -2; dz <= 2; dz++)
+		{
+			for (int dx = -2; dx <= 2; dx++)
+			{
+				for (int y = surface + 40; y > surface - 60; y--)
+				{
+					if (!Blocks.IsSolid(world.GetBlock(feetX + dx, y, feetZ + dz))) continue;
+					if (y > supportY) { supportY = y; supportX = feetX + dx; supportZ = feetZ + dz; }
+					break;
+				}
+			}
+		}
+		Check(supportY != int.MinValue, "the cross-chunk landing spot has a support block");
+		if (supportY == int.MinValue) { world.Free(); return; }
+
+		var supportBlock = world.GetBlock(supportX, supportY, supportZ);
+		GD.Print($"  info  support=({supportX},{supportY},{supportZ}) block={supportBlock} "
+			+ $"chunk={VoxelWorld.ChunkKeyOf(supportX, supportY, supportZ)} centre={VoxelWorld.ChunkKeyOf(feetX, supportY, feetZ)}");
+		Check(Blocks.IsBreakable(supportBlock), $"the block under the feet is breakable ({supportBlock})");
+		Check(SupportTopFacePresent(world, supportX, supportY, supportZ),
+			"the support block's top face exists in the collision geometry at that coordinate");
+
+		int mismatches = CollisionPlacementMismatches(world);
+		Check(mismatches == 0, $"every collision body sits at its section origin with section-local geometry ({mismatches} mismatches)");
+		int gaps = CollisionShapeGaps(world);
+		Check(gaps == 0, $"every decided section with blocks carries a shape ({gaps} gaps)");
+
+		// Mutation proof, self-contained: the same checkers must notice a body moved by one chunk
+		// and a shape that disappears, or the assertions above prove nothing. Both are restored
+		// immediately, so the world stays valid for the rest of the run.
+		if (TryFirstBody(world, out var body))
+		{
+			var saved = body.Position;
+			body.Position = saved + new Vector3(VoxelWorld.ChunkSize, 0, 0);
+			int moved = CollisionPlacementMismatches(world);
+			Check(moved > 0, $"mutation: a body offset by one chunk is detected ({moved} mismatches)");
+			body.Position = saved;
+			Check(CollisionPlacementMismatches(world) == 0, "restoring the body clears the mismatch");
+		}
+		if (TryFirstShape(world, out var shape))
+		{
+			var saved = shape.Shape;
+			shape.Shape = null;
+			int missing = CollisionShapeGaps(world);
+			Check(missing > 0, $"mutation: a removed section shape is detected ({missing} gaps)");
+			shape.Shape = saved;
+		}
+
+		world.Free();
+	}
+
+	/// <summary>True when the collision geometry has the four corners of the block's top face at
+	/// the block's own world coordinate: a trimesh face for a meshed section, or the box top for
+	/// a fully solid meshless one. All four corners must be present, so a body placed a chunk
+	/// away cannot pass.</summary>
+	private static bool SupportTopFacePresent(VoxelWorld world, int x, int y, int z)
+	{
+		if (!world.TryGetChunk(x, y, z, out var chunk)) return false;
+		var coord = chunk.GetComponent<ChunkCoord>();
+		var visual = chunk.GetComponent<ChunkVisual>();
+		var local = new Vector3I(VoxelWorld.FloorDiv(x - coord.X * VoxelWorld.ChunkSize, VoxelWorld.SectionSize),
+			VoxelWorld.FloorDiv(y - coord.Y * VoxelWorld.ChunkSize, VoxelWorld.SectionSize),
+			VoxelWorld.FloorDiv(z - coord.Z * VoxelWorld.ChunkSize, VoxelWorld.SectionSize));
+		int si = (local.Y * VoxelWorld.SectionsPerAxis + local.Z) * VoxelWorld.SectionsPerAxis + local.X;
+		var shape = visual.Shapes?[si]?.Shape;
+		if (shape == null) return false;
+
+		var origin = new Vector3(
+			coord.X * VoxelWorld.ChunkSize + local.X * VoxelWorld.SectionSize,
+			coord.Y * VoxelWorld.ChunkSize + local.Y * VoxelWorld.SectionSize,
+			coord.Z * VoxelWorld.ChunkSize + local.Z * VoxelWorld.SectionSize);
+		if (shape is BoxShape3D box)
+			return Mathf.IsEqualApprox(origin.Y + box.Size.Y, y + 1f);
+		if (shape is not ConcavePolygonShape3D tri) return false;
+
+		float top = y + 1f - origin.Y;
+		float x0 = x - origin.X, x1 = x0 + 1f, z0 = z - origin.Z, z1 = z0 + 1f;
+		bool c00 = false, c10 = false, c01 = false, c11 = false;
+		foreach (var v in tri.GetFaces())
+		{
+			if (!Mathf.IsEqualApprox(v.Y, top)) continue;
+			if (v.X < x0 - 0.01f || v.X > x1 + 0.01f || v.Z < z0 - 0.01f || v.Z > z1 + 0.01f) continue;
+			if (v.X < x0 + 0.5f) { if (v.Z < z0 + 0.5f) c00 = true; else c01 = true; }
+			else { if (v.Z < z0 + 0.5f) c10 = true; else c11 = true; }
+		}
+		return c00 && c10 && c01 && c11;
+	}
+
+	/// <summary>Counts collision bodies whose world position is not their section origin, or
+	/// whose geometry is not section-local (trimesh vertices outside [0, SectionSize], wrong box
+	/// size, unknown shape kind). Zero is the only valid answer.</summary>
+	private static int CollisionPlacementMismatches(VoxelWorld world)
+	{
+		int mismatches = 0;
+		world.Store.Query<ChunkCoord, ChunkVisual>().ForEachEntity(
+			(ref ChunkCoord coord, ref ChunkVisual visual, Entity _) =>
+		{
+			if (visual.Bodies == null || visual.Shapes == null) return;
+			for (int si = 0; si < ChunkVisual.SectionCount; si++)
+			{
+				var body = visual.Bodies[si];
+				var shape = visual.Shapes[si];
+				if (body == null && shape == null) continue;
+				if (body == null || shape == null || shape.Shape == null) { mismatches++; continue; }
+				var local = ChunkVisual.SectionOf(si);
+				var expected = new Vector3(
+					coord.X * VoxelWorld.ChunkSize + local.X * VoxelWorld.SectionSize,
+					coord.Y * VoxelWorld.ChunkSize + local.Y * VoxelWorld.SectionSize,
+					coord.Z * VoxelWorld.ChunkSize + local.Z * VoxelWorld.SectionSize);
+				if (!body.Position.IsEqualApprox(expected)) { mismatches++; continue; }
+				if (shape.Shape is ConcavePolygonShape3D tri)
+				{
+					foreach (var v in tri.GetFaces())
+					{
+						if (v.X < -0.01f || v.X > VoxelWorld.SectionSize + 0.01f
+							|| v.Y < -0.01f || v.Y > VoxelWorld.SectionSize + 0.01f
+							|| v.Z < -0.01f || v.Z > VoxelWorld.SectionSize + 0.01f)
+						{ mismatches++; break; }
+					}
+				}
+				else if (shape.Shape is BoxShape3D box)
+				{
+					if (!box.Size.IsEqualApprox(Vector3.One * VoxelWorld.SectionSize)) mismatches++;
+				}
+				else mismatches++;
+			}
+		});
+		return mismatches;
+	}
+
+	/// <summary>Counts sections the collision pass has decided, that contain blocks, but that
+	/// carry no shape: the geometry/data mismatch class the dig-down bug looked like.</summary>
+	private static int CollisionShapeGaps(VoxelWorld world)
+	{
+		int gaps = 0;
+		world.Store.Query<ChunkCoord, ChunkBlocks, ChunkVisual>().ForEachEntity(
+			(ref ChunkCoord coord, ref ChunkBlocks blocks, ref ChunkVisual visual, Entity _) =>
+		{
+			if (visual.Shapes == null) return;
+			for (int si = 0; si < ChunkVisual.SectionCount; si++)
+			{
+				if ((visual.CollisionDone & (1UL << si)) == 0) continue;
+				if (!SectionHasBlocks(blocks.Value, ChunkVisual.SectionOf(si))) continue;
+				if (visual.Shapes[si]?.Shape == null) gaps++;
+			}
+		});
+		return gaps;
+	}
+
+	private static bool TryFirstBody(VoxelWorld world, out StaticBody3D body)
+	{
+		StaticBody3D found = null;
+		world.Store.Query<ChunkCoord, ChunkVisual>().ForEachEntity(
+			(ref ChunkCoord coord, ref ChunkVisual visual, Entity _) =>
+		{
+			if (found != null || visual.Bodies == null) return;
+			foreach (var b in visual.Bodies) if (b != null) { found = b; return; }
+		});
+		body = found;
+		return found != null;
+	}
+
+	private static bool TryFirstShape(VoxelWorld world, out CollisionShape3D shape)
+	{
+		CollisionShape3D found = null;
+		world.Store.Query<ChunkCoord, ChunkVisual>().ForEachEntity(
+			(ref ChunkCoord coord, ref ChunkVisual visual, Entity _) =>
+		{
+			if (found != null || visual.Shapes == null) return;
+			foreach (var s in visual.Shapes) if (s?.Shape != null) { found = s; return; }
+		});
+		shape = found;
+		return found != null;
 	}
 
 	/// <summary>Mechanical collision-gate invariant for one chunk: every section whose centre is
