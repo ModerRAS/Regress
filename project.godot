@@ -27,3 +27,4 @@ project/assembly_name="Regress"
 [rendering]
 
 environment/defaults/default_clear_color=Color(0.45, 0.68, 0.92, 1)
+textures/vram_compression/import_etc2_astc=true

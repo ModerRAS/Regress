@@ -26,13 +26,48 @@ check, but with the project on net9.0 the normal (non-gradle) template route pas
 pipeline keeps the simpler non-gradle export. `Regress.csproj` now targets `net9.0`, and both
 workflows use `dotnet-version: 9.0.x`.
 
-User-visible cost: a local `dotnet build` now needs a .NET 9 SDK (or a newer SDK that can
-target net9.0). CI installs 9.0.x explicitly.
+Local .NET environment (measured on the user's machine; end-to-end behavior NOT verified):
+`dotnet --list-sdks` shows only 10.0.101 and 10.0.301 (no 8.x, no 9.x SDK), and SDK 10 can
+target net9.0, so a local `dotnet build` needs nothing installed — the earlier "needs a .NET 9
+SDK" claim was wrong. `dotnet --list-runtimes` shows 8.0.28 / 10.0.1 / 10.0.9 (no 9.0 runtime);
+net9.0 apps roll forward by default only across minor versions, not major, so a local launch may
+fail with "requires .NET 9.0 runtime". That is unverified — settling it needs a real local
+launch, which this workflow forbids (no local Godot runs). Do not assume either outcome.
+
+Merge order: the TFM bump lands after `feat/scale-64` (all of scale-64's evidence was produced
+on net8.0); after merging, rerun the full suite and do one local launch verification. Do not add
+`<RollForward>Major</RollForward>` now — add it only if that local launch reports the missing 9.0
+runtime.
 
 The Apple embedded export plugin (iOS/macOS) at `4.7.2-stable` has no equivalent TFM
 validation, so the exact Android error will not repeat on iOS; if the iOS export fails under
 net9.0 it is the same template/.NET-version expectation surfacing elsewhere, not a new root
 cause. CI is the evidence.
+
+## Android ETC2/ASTC import gate (measured in CI)
+
+The second CI run got past the TFM check and stopped at:
+
+```
+ERROR: Cannot export project with preset "Android" due to configuration errors:
+Exporting to Android when using C#/.NET is experimental.
+ETC2/ASTC texture compression is required for Android export. In Project Settings, search for 'ETC2' in the search field, or enable 'Advanced Settings' and go to Rendering > Textures > VRAM Compression to enable 'Import ETC2 ASTC'.
+```
+
+Source: `platform/android/export/export_plugin.cpp` @ `4.7.2-stable` lines 3148-3153 —
+`if (!ResourceImporterTextureSettings::should_import_etc2_astc())` fails the preset in
+command-line mode (message at line 3151). The Android plugin registers no `texture_format/*`
+preset option, so this is fixed in `project.godot`, not in the export preset. The setting is the
+project-level import setting `rendering/textures/vram_compression/import_etc2_astc` (read by
+`editor/import/resource_importer_texture_settings.cpp:47-48`), written in `project.godot` as
+`textures/vram_compression/import_etc2_astc=true`.
+
+Effect: it applies to every platform's `--import` (slower imports, larger `.godot` cache) and
+makes the Android APK include ETC2/ASTC textures; desktop platforms still use S3TC/BPTC.
+
+iOS/macOS do not have this gate: `editor/export/editor_export_platform_apple_embedded.cpp`
+@ `4.7.2-stable` lines 2202-2234 (`has_valid_export_configuration`) contain no
+texture-compression check (and no TFM check either).
 
 ## macOS editor bundle name (measured in CI)
 
