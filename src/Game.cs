@@ -33,26 +33,43 @@ public partial class Game : Node3D
 	private int _digFallFrame, _digClearedFrame, _digFallStopFrame;
 	// Dig window 252 -> 2400 (2148 frames, ~14.8 s at the measured ~145 process fps); report at
 	// 2450. Two lower bounds, and they are NOT added serially -- the descent overlaps the digging:
-	//   break bound   = 1440 breaks / measured 0.67 breaks per frame ~= 2150 frames if applied one
-	//                   by one; the whole shaft is queued in ONE edit batch instead, so the batch
-	//                   pays one chunk rebuild rather than 1440 incremental applies. The shaft is
-	//                   6x6 = 36 cells per layer (4x4 wedges the body, 5x5 left only 0.5 of margin
-	//                   and the measured 0.5 drift pressed the edge into the wall at
-	//                   clearance=0.00; 6 wide puts the aligned axis 2.5/3.5 from the walls, so
-	//                   the derived margin is 2.5 - 2.0 = 0.5). 40 layers = 1440 breaks.
+	//   break bound   = 1476 breaks for 41 layers; measured, the whole batch applies in ONE frame,
+	//                   so it pays one chunk rebuild rather than 1476 incremental applies. The shaft
+	//                   is 6x6 = 36 cells per layer (4x4 wedges the body; 5 wide left only 0.5 of
+	//                   margin and the measured drift pressed the capsule edge into the wall). 6
+	//                   wide puts the aligned axis -- the dug interval's GEOMETRIC centre, cx + 1,
+	//                   not the cell centre cx + 0.5 -- a derived 3.0 - 2.0 = 1.0 from each wall.
+	//                   41 layers = 1476 breaks.
 	//   descent bound = 40 layers x frames per block. A 1-block free fall at g = 104 is 0.14 s
 	//                   ~= 20 process frames at 145 fps (40 blocks continuously ~127 frames); it
 	//                   overlaps the digging, and the one chunk rebuild (~250 frames) overlaps too.
 	// The queue/fall frame evidence lines name how the budget is spent. If a measured run still
 	// cannot reach DigLayersTarget inside this window, fall back to "the layers the window can
 	// dig" and say so in the log -- never a silent downgrade.
-	// The landing poll and the shaft-collision poll share this bound: the 1440-cell edit
+	// The landing poll and the post-batch collision gate share this bound: the 1476-cell edit
 	// re-meshes the chunk (64 sections, budgeted 3 ms/frame) and the collision pass follows;
 	// 240 frames is ~4x the 64-frame one-section-per-frame lower bound and still leaves the
 	// fall room inside the 2148-frame window. If it times out, the measured rebuild time is
 	// the number to raise.
 	private const int DigReadyFrames = 240;
 	private const int DigLayersTarget = 40;   // the gate's physical meaning; one-batch queue reaches it
+	// The shaft's cross-section in cells relative to (_digShaftX,_digShaftZ): 6 wide, so the dug
+	// interval is [cx + ShaftMin, cx + ShaftMax + 1) and its GEOMETRIC centre is cx + 1. The cell
+	// centre (cx + 0.5) is 0.5 off that, which left an asymmetric 0.5/1.5 wall margin; the measured
+	// -0.501 lateral drift then pressed the capsule into the nearer wall.
+	private const int ShaftMin = -2;
+	private const int ShaftMax = 3;
+	private const float CapsuleRadius = 2.0f;   // Player.cs CapsuleShape3D radius
+	private const float ShaftCentre = (ShaftMin + ShaftMax + 1) / 2f;    // 1.0
+	// Derived, never a literal: half the dug width minus the capsule radius = 3.0 - 2.0 = 1.0.
+	private const float WallMargin = (ShaftMax + 1 - ShaftMin) / 2f - CapsuleRadius;
+	// The shaft is dug ONE layer deeper than the gate needs. The body rests the same 0.04 above
+	// whatever face holds it, so its descent equals the number of dug layers below it exactly:
+	// start feet -9.96 on the surface face at -10.0, and after 40 layers the landing feet -49.96 on
+	// a floor face at -50.0 give depth == 40.0 -- while depthOk is the strict `depth > 40f`. Digging
+	// DigLayersTarget + 1 keeps that assertion in its strong form and pays one extra layer
+	// (41 x 36 = 1476 breaks, +2.4%) instead of relaxing the threshold.
+	private const int DigLayersDug = DigLayersTarget + 1;   // 41
 	private Vector3I? _placedCell;
 	private int _interactVersion;
 
@@ -389,11 +406,15 @@ public partial class Game : Node3D
 				// real footprint on an undug rim (measured: solidCells=1/25, wallClearance=-0.39).
 				_digShaftX = fx;
 				_digShaftZ = fz;
-				// Second, <=0.4-cell alignment: put the body on the shaft centre. The wall margin is
-				// then the derived shaftHalfWidth - capsuleRadius = 5/2 - 2.0 = 0.5 (the raw feet
-				// left only 0.114, where any drift jams the capsule on the wall).
+				// Align to the shaft's GEOMETRIC centre, not the cell centre: the dug cells span
+				// cx + ShaftMin .. cx + ShaftMax, i.e. the interval [cx - 2, cx + 4), whose centre is
+				// cx + 1 while the cell centre is cx + 0.5. The cell-centre alignment left only 0.5 of
+				// margin on the near wall and 1.5 on the far one; the measured -0.501 drift then
+				// pressed the capsule 0.001 into the near wall face (the failing run reported 6
+				// identical slide contacts at x = -2, normal (1,0,0), at the capsule's widest point)
+				// and the body never fell again. ShaftCentre keeps this derived from the shaft width.
 				int cx = fx, cz = fz;
-				Player.GlobalPosition = new Vector3(cx + 0.5f, Player.GlobalPosition.Y, cz + 0.5f);
+				Player.GlobalPosition = new Vector3(cx + ShaftCentre, Player.GlobalPosition.Y, cz + ShaftCentre);
 				// Drop any pre-alignment horizontal drift; gravity still pulls the body down.
 				Player.Velocity = Vector3.Zero;
 				feet = Player.GlobalPosition;
@@ -410,15 +431,11 @@ public partial class Game : Node3D
 
 			// Real margin check, not a guess: the body's footprint cells must be inside the shaft
 			// and the body surface must clear the wall by the derived margin. `clearance` below is
-			// the physical margin (body surface to wall face): the capsule radius cancels in both
-			// terms, so it is NOT a centre-to-centre offset. A failure is a script bug and must
+			// the physical margin (body surface to wall face), the minimum over BOTH walls of each
+			// axis: the capsule radius cancels in both terms, so it is NOT a centre-to-centre
+			// offset. With the axis on the geometric centre that margin is half the dug width minus
+			// the radius (3.0 - 2.0 = 1.0), so anything below WallMargin is a misalignment and must
 			// not silently continue.
-			const int ShaftMin = -2;            // the shaft cells span cx-2 .. cx+3 (6 wide)
-			const int ShaftMax = 3;
-			const float CapsuleRadius = 2.0f;   // Player.cs CapsuleShape3D radius
-			// After the alignment the axis sits at cx + 0.5; the nearer wall is at cx + ShaftMin,
-			// so the derived physical margin is (0.5 - ShaftMin) - CapsuleRadius = 2.5 - 2.0 = 0.5.
-			const float WallMargin = (0.5f - ShaftMin) - CapsuleRadius;
 			int footMinX = Mathf.FloorToInt(feet.X - 2f), footMaxX = Mathf.CeilToInt(feet.X + 2f) - 1;
 			int footMinZ = Mathf.FloorToInt(feet.Z - 2f), footMaxZ = Mathf.CeilToInt(feet.Z + 2f) - 1;
 			bool covered = footMinX >= _digShaftX + ShaftMin && footMaxX <= _digShaftX + ShaftMax
@@ -436,37 +453,21 @@ public partial class Game : Node3D
 					+ $"need>={WallMargin:F2})");
 				return;
 			}
-			GD.Print($"digdown: aligned to shaft centre ({_digShaftX + 0.5f:F1},{_digShaftZ + 0.5f:F1}) "
+			GD.Print($"digdown: aligned to shaft centre ({_digShaftX + ShaftCentre:F1},{_digShaftZ + ShaftCentre:F1}) "
 				+ $"clearance={clearance:F2} (derived {WallMargin:F2})");
 
-			// The whole shaft's collision must be the new version before the body is released: the
-			// batch edit re-dirties the chunk, but the collision pass only rebuilds sections inside
-			// the player's gate, so stale trimeshes deeper in the shaft would catch the falling body
-			// (measured: data empty, velocity accumulating, position stuck after 5 blocks).
-			if (!_digShaftReady)
-			{
-				bool ready = ShaftCollisionReady(out int readySections, out int totalSections);
-				if (ready) _digShaftReady = true;
-				else if (_frames - 252 > DigReadyFrames)
-				{
-					DigFail($"shaft collision not ready after {DigReadyFrames} frames "
-						+ $"({readySections}/{totalSections} sections)");
-					return;
-				}
-				else return;
-			}
 		}
 
 		// One edit batch for the whole shaft: per-layer batches re-dirtied the 64-section chunk
 		// 40 times and the rebuild dominated (measured ~250 frames per layer). The shaft is 6x6
-		// = 36 cells per layer, 40 layers = 1440 breaks queued once; the rebuild is paid once and
+		// = 36 cells per layer, 41 layers = 1476 breaks queued once; the rebuild is paid once and
 		// the body falls the pre-dug shaft. RequestEdit is the same edit pipeline mining uses, so
 		// the world still decides what a break does; only the aim/raycast layer is skipped.
 		if (!_digQueued)
 		{
 			_digQueued = true;
 			int cells = 0;
-			for (int layer = 0; layer < 40; layer++)
+			for (int layer = 0; layer < DigLayersDug; layer++)
 			{
 				int y = _digStartLayer - layer;
 				for (int dz = -2; dz <= 3; dz++)
@@ -480,10 +481,43 @@ public partial class Game : Node3D
 					}
 				}
 			}
-			GD.Print($"digdown: queued {cells} shaft cells at frame={_frames}, 40 layers at "
+			GD.Print($"digdown: queued {cells} shaft cells at frame={_frames}, {DigLayersDug} layers at "
 				+ $"({_digShaftX - 2}..{_digShaftX + 3},{_digShaftZ - 2}..{_digShaftZ + 3}) from y={_digStartLayer}");
 		}
 		UpdateDigLayers();
+		// The batch is queued, but the work it triggers is BUDGETED: the blocks vanish in one frame
+		// while the chunk is re-meshed and re-collided at 3 ms/frame. Releasing the body before that
+		// finishes drops it into sections whose collision is still the old version -- measured as a
+		// body stuck 5.0 blocks down with the data around it air, velocity accumulated to -1553 and
+		// 6 identical slide contacts on the wall face. So hold the body on the surface (same staging
+		// as the landing poll: nothing about the descent is measured until the collision it will
+		// fall through is real) and release it only when the direct ray assertion below clears: the
+		// collision must agree with the block data along the line the body will fall. The section
+		// count is a printed diagnostic only, never the release condition -- measured, it cannot be
+		// satisfied while the body is held: after 240 frames the probe was clear with 6/8 sections,
+		// because the collision pass rebuilds sections inside the player's gate only and the deepest
+		// sections the shaft spans stay outside it. Gating the release on that count is the original
+		// bug in disguise: the old poll ran BEFORE the batch, so it certified the PRE-dig collision.
+		if (!_digShaftReady)
+		{
+			Player.GlobalPosition = new Vector3(Player.GlobalPosition.X, _digStartY, Player.GlobalPosition.Z);
+			Player.Velocity = Vector3.Zero;
+			ShaftCollisionReady(out int readySections, out int totalSections);
+			bool probeClear = ShaftCollisionProbeClear(out string probe);
+			if (probeClear)
+			{
+				_digShaftReady = true;
+				GD.Print($"digdown: shaft collision is the new version at frame={_frames} "
+					+ $"(fall line clear; {readySections}/{totalSections} sections carry a rebuilt shape)");
+			}
+			else if (_frames - 252 > DigReadyFrames)
+			{
+				DigFail($"shaft collision still holds pre-dig solid on the fall line after "
+					+ $"{DigReadyFrames} frames (probe={probe}, {readySections}/{totalSections} sections)");
+				return;
+			}
+			else return;
+		}
 		if (_digFallFrame == 0 && !Player.IsOnFloor())
 		{
 			_digFallFrame = _frames;
@@ -508,7 +542,7 @@ public partial class Game : Node3D
 		total = 0;
 		int minX = _digShaftX - 2, maxX = _digShaftX + 3;
 		int minZ = _digShaftZ - 2, maxZ = _digShaftZ + 3;
-		int minY = _digStartLayer - 39, maxY = _digStartLayer;
+		int minY = _digStartLayer - (DigLayersDug - 1), maxY = _digStartLayer;
 		for (int sy = VoxelWorld.FloorDiv(minY, VoxelWorld.SectionSize); sy <= VoxelWorld.FloorDiv(maxY, VoxelWorld.SectionSize); sy++)
 		{
 			for (int sz = VoxelWorld.FloorDiv(minZ, VoxelWorld.SectionSize); sz <= VoxelWorld.FloorDiv(maxZ, VoxelWorld.SectionSize); sz++)
@@ -530,6 +564,31 @@ public partial class Game : Node3D
 			}
 		}
 		return ready == total;
+	}
+
+	/// <summary>The invariant the selftest's support-collision assertion enforces, applied to the
+	/// freshly dug shaft: collision geometry must agree with block data at the same coordinates. A
+	/// ray down the shaft's own centre line must reach the shaft floor without touching anything;
+	/// a hit means the collision is still the old version, which is the state that wedged the body.
+	/// HitFromInside is required for the check to have teeth: a stale section trimesh is solid where
+	/// the data is air, so the ray would START inside it, and with the default hit_from_inside=false
+	/// that reports no hit at all -- the false "clear" that let the body fall into un-rebuilt
+	/// collision. Returns false and names the hit otherwise.</summary>
+	private bool ShaftCollisionProbeClear(out string probe)
+	{
+		probe = "clear";
+		var from = new Vector3(_digShaftX + ShaftCentre, _digStartLayer + 0.5f, _digShaftZ + ShaftCentre);
+		// Stops inside the last dug layer's cell, half a block above the shaft floor, so a correct
+		// shaft reports nothing while a stale one reports the old solid the ray starts inside.
+		var to = from + new Vector3(0f, -(DigLayersDug - 2f), 0f);
+		var query = PhysicsRayQueryParameters3D.Create(from, to);
+		query.HitFromInside = true;
+		query.Exclude = new Godot.Collections.Array<Rid> { Player.GetRid() };
+		var hit = Player.GetWorld3D().DirectSpaceState.IntersectRay(query);
+		if (hit.Count == 0) return true;
+		var point = (Vector3)hit["position"];
+		probe = $"hit at {point} on {hit["collider"]}";
+		return false;
 	}
 
 	private bool InShaftFootprint(Vector3I cell)

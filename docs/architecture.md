@@ -260,6 +260,16 @@ Gameplay never mutates the world; it proposes an edit and the world decides.
   called by both the interactive and the scripted path: `RMB click -> Build -> interactable target? interact : RequestEdit(Place, ...)`.
 - Requests are applied before meshing in the same frame, so a multi-block break across chunk
   borders is just N `MarkDirty` calls that the existing systems already handle.
+- **Known behaviour: edit application is not budgeted, only the work it triggers is.** One frame
+  drains the whole request list (`RequestEdit` only appends; the applier loops it and clears it),
+  while generation, meshing and collision run against the shared `ChunkWorkBudgetMs = 3 ms`
+  deadline. A script that queues thousands of breaks in one frame therefore empties the blocks in a
+  single frame while its chunk is still being re-meshed section by section — **a batch edit can
+  outrun the collision rebuild.** Any consumer that digs and then drops something into the hole
+  must poll the *post-edit* freshness itself (the demo's dig gate does exactly this: it holds the
+  body until every section the shaft spans carries the new collision *and* a ray down the emptied
+  shaft hits nothing). This is a test-script extreme; a player breaking blocks one at a time cannot
+  reach it.
 - **Invariant: the block under the player's feet must be breakable, whether or not its section
   has been meshed.** Collision for a meshless (fully solid or buried) section falls back to a
   `BoxShape3D`, so the player can stand on terrain the mesher has not touched; the break path must
