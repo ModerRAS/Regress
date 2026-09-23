@@ -69,6 +69,31 @@ iOS/macOS do not have this gate: `editor/export/editor_export_platform_apple_emb
 @ `4.7.2-stable` lines 2202-2234 (`has_valid_export_configuration`) contain no
 texture-compression check (and no TFM check either).
 
+## iOS icon gate (measured in CI)
+
+The fifth CI run passed the Team ID gate and then failed on the icon:
+
+```
+ERROR: Error opening file ''.
+[DONE] export
+ERROR: Export Icons: Invalid icon (icons/settings_58x58): ''.
+ERROR: Project export for preset "iOS" failed.
+```
+
+Source: `platform/ios/export/export_plugin.cpp` @ `4.7.2-stable`, `_export_icons()` lines
+234-313: for every size × colour mode (NORMAL/DARK/TINTED) it takes the size-specific preset key
+(ours is empty) → falls back to `icons/icon_1024x1024` (+ `_dark`/`_tinted` suffix) → if still
+empty, non-NORMAL modes are skipped (`continue`, lines 282-285) → NORMAL falls back to the
+project setting `application/config/icon` (line 287) → otherwise `Invalid icon` (line 291). The
+preset keys are registered in `editor/export/editor_export_platform_apple_embedded.cpp`
+@ `4.7.2-stable` lines 371-373.
+
+Placeholder: `preset.4` uses
+`icons/icon_1024x1024="res://texturepacks/default/tiles/grass_top.png"` (a 16×16 game tile)
+with `application/icon_interpolation=0` (Nearest neighbor) so the pixel art stays sharp when
+scaled to 1024. This is **not a real icon**; before a public release it must be replaced with a
+proper 1024×1024 icon. `_dark`/`_tinted` stay empty (the source above skips them).
+
 ## macOS editor bundle name (measured in CI)
 
 `Godot_v4.7.2-stable_mono_macos.universal.zip` extracts as **`Godot_mono.app`**, executable
@@ -169,6 +194,10 @@ non-gradle route passes, so nothing extra is installed or committed.
 
 Artifacts (bundle `Regress-desktop-android`): `Regress-linux-x86_64.zip`,
 `Regress-windows-x86_64.zip`, `Regress-android.apk`.
+
+Android launcher icon: `preset.3` has no `launcher_icons/*` keys and the export still succeeds,
+so the APK carries the engine's default launcher icon. That is an appearance gap, not a blocker;
+brand launcher icons can be added later as a separate decision.
 
 ### `apple` (macos-latest)
 
