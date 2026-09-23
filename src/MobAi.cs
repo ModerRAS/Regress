@@ -24,16 +24,16 @@ public struct MobMove
 /// </summary>
 public static class MobAiRules
 {
-	public const float ReactRadius = 12f;     // approach the player inside this radius
-	public const float WanderRadius = 8f;
+	public const float ReactRadius = 48f;     // approach the player inside this radius
+	public const float WanderRadius = 32f;
 	public const float RetargetSeconds = 2.5f;
-	public const float ArriveRadius = 1.2f;
+	public const float ArriveRadius = 4.8f;
 
 	// The mob AABB. MobKinds is the per-kind table and reads these.
-	public const float HalfWidth = 0.4f;
-	public const float Height = 0.8f;
+	public const float HalfWidth = 1.6f;
+	public const float Height = 3.2f;
 
-	private const float Probe = 0.85f;        // HalfWidth + a step: sees the cell the mob will enter
+	private const float Probe = 3.4f;        // HalfWidth + a step: sees the cell the mob will enter
 	private const float Epsilon = 0.0001f;
 	private const int TargetAttempts = 8;
 	private const uint FallbackRng = 0x9E3779B9; // xorshift32 can never leave zero
@@ -54,7 +54,7 @@ public static class MobAiRules
 		{
 			for (int i = 0; i < SideX.Length; i++)
 			{
-				if (!MobFits(world, x + SideX[i], y, z + SideZ[i])) continue;
+				if (!MobFits(world, x + SideX[i] * 4f, y, z + SideZ[i] * 4f)) continue;
 				move.DirX = SideX[i];
 				move.DirZ = SideZ[i];
 				return move;
@@ -104,7 +104,7 @@ public static class MobAiRules
 		int feetY = Floor(y);
 		int fx = Floor(x + move.DirX * Probe), fz = Floor(z + move.DirZ * Probe);
 		if (!Solid(world.GetBlock(fx, feetY, fz))) return move;
-		if (!Solid(world.GetBlock(fx, feetY + 1, fz)))
+		if (!Solid(world.GetBlock(fx, feetY + 4, fz)))
 		{
 			move.StepUp = true;
 			return move;
@@ -113,7 +113,7 @@ public static class MobAiRules
 		for (int i = 0; i < SideX.Length; i++)
 		{
 			int sx = Floor(x + SideX[i] * Probe), sz = Floor(z + SideZ[i] * Probe);
-			if (Solid(world.GetBlock(sx, feetY, sz)) || Solid(world.GetBlock(sx, feetY + 1, sz))) continue;
+			if (Solid(world.GetBlock(sx, feetY, sz)) || Solid(world.GetBlock(sx, feetY + 4, sz))) continue;
 			move.DirX = SideX[i];
 			move.DirZ = SideZ[i];
 			return move;

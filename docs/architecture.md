@@ -8,9 +8,9 @@ them and the ones that were deliberately not drawn.
 
 | entity | count | created by | lifetime |
 | --- | --- | --- | --- |
-| **chunk entity** | ~230 resident | `VoxelWorld.CreateChunk`, driven by the streaming system | enters and leaves the view distance |
+| **chunk entity** | ~98 resident (view distance 3 chunks × 64) | `VoxelWorld.CreateChunk`, driven by the streaming system | enters and leaves the view distance |
 | **player entity** | exactly 1 | `Player._Ready` | never destroyed, never changes archetype |
-| **mob entity** | ≤ 48 (`MobSystems.MaxMobs`) | `MobSpawner` (factory), one per planned surface cell | spawns on a ring around `Focus`, despawns past `DespawnRadius` or below `BedrockY - 16` |
+| **mob entity** | ≤ 48 (`MobSystems.MaxMobs`) | `MobSpawner` (factory), one per planned surface cell | spawns on a ring around `Focus`, despawns past `DespawnRadius` or below `BedrockY - 64` |
 | **block entity** | one per interactive block that is placed | `BlockEntityRegistry.Sync`, called from `VoxelWorld.SetBlock` | deleted when its byte stops being interactive, or when its chunk unloads |
 
 There is no entity hierarchy, no relation and no prefab. `ChunkCoord` is 3D, so chunk Y is
@@ -21,8 +21,8 @@ unbounded.
 ```csharp
 // chunk: data
 struct ChunkCoord   { int X, Y, Z; }                        // 3D, unbounded Y
-struct ChunkBlocks  { byte[] Value; byte[] Orientation; }   // 4096 bytes each, index = (y*16 + z)*16 + x; Orientation: per-voxel 24-rotation, 0 = no rotation
-struct ChunkVisual  { MeshInstance3D Mesh; StaticBody3D Body; CollisionShape3D Shape; }
+struct ChunkBlocks  { byte[] Value; byte[] Orientation; }   // ChunkSize³ = 262144 bytes each, index = (y*ChunkSize + z)*ChunkSize + x; Orientation: per-voxel 24-rotation, 0 = no rotation
+struct ChunkVisual  { MeshInstance3D[] Meshes; StaticBody3D[] Bodies; CollisionShape3D[] Shapes; int Cursor; ulong CollisionDone; }  // one entry per 16³ section; Cursor = next section to mesh, CollisionDone = per-section collision bits
 
 // chunk: tags
 struct NeedsMesh      : ITag { }
@@ -50,7 +50,7 @@ struct Mob : ITag { }
 // block entity: data
 struct BlockPos     { int X, Y, Z; }             // position-keyed identity; the entity carries its own cell
 struct Interactable { InteractKind Kind; }       // the RMB dispatch key (None, Toggle)
-struct ToggleState  { bool Open; }               // per-instance state, never in the 4096-byte arrays
+struct ToggleState  { bool Open; }               // per-instance state, never in the ChunkSize³-byte arrays
 ```
 
 `ChunkBlocks.Orientation` is the 24-element cube rotation group: every block stores one, a block
@@ -76,7 +76,7 @@ other block is `Any`.
 
 Two component details are deliberate deviations from "keep components blittable":
 
-- **`ChunkBlocks` holds `byte[]` references** rather than inline fixed buffers. 4096 bytes
+- **`ChunkBlocks` holds `byte[]` references** rather than inline fixed buffers. 262144 bytes
   inline each would inflate every archetype and copy on every archetype move. Friflo returns
   components by `ref`, so the arrays are still mutated in place with no copy.
 - **`ChunkVisual` holds Godot node handles** — an engine-aware component, and not the only one
@@ -88,7 +88,7 @@ Two component details are deliberate deviations from "keep components blittable"
 
 The chunk byte array stays authoritative for terrain and rendering. An interactive block is a
 position-keyed entity carrying `BlockPos` + `Interactable` + a per-kind state component
-(`ToggleState` for `Chest`); instance state never enters the 4096-byte arrays. Lookup is two
+(`ToggleState` for `Chest`); instance state never enters the ChunkSize³-byte arrays. Lookup is two
 dictionary probes — chunk bucket, then cell — never a scan. `VoxelWorld.SetBlock` is the ONE choke
 point that reconciles the two sides, so they cannot disagree, and `BlockEntityRegistry.Audit`
 checks both directions. RMB ordering is decided by the pure `PlayerSystems.RightClickAction`
@@ -105,8 +105,16 @@ longer interactive.
 | system | query | budget | transition |
 | --- | --- | --- | --- |
 | Streaming | none, reads the focus | 4 chunk creations/frame | create / delete entities |
-| Mesh | `Query<ChunkCoord, ChunkVisual>().AllTags(NeedsMesh)`, nearest first | **3 ms** | `−NeedsMesh +NeedsCollision` |
-| Collision | `Query<ChunkCoord, ChunkVisual>().AllTags(NeedsCollision)`, filtered by proximity | **3 ms** | `−NeedsCollision` |
+| Mesh | `Query<ChunkCoord, ChunkVisual>().AllTags(NeedsMesh)`, nearest first | **3 ms, shared** | `−NeedsMesh +NeedsCollision` |
+| Collision | `Query<ChunkCoord, ChunkVisual>().AllTags(NeedsCollision)`, filtered by proximity | **3 ms, shared** | `−NeedsCollision` |
+
+The mesh and collision unit is the **16³ section**, not the 64³ chunk: a chunk entity keeps its
+`NeedsMesh`/`NeedsCollision` lifecycle, and `ChunkVisual.Cursor` / `ChunkVisual.CollisionDone`
+track which of its 64 sections still need work. Generation, mesh and collision share one
+per-frame deadline (`ChunkWorkBudgetMs = 3 ms`); every round still does at least one work item,
+which is a progress guarantee independent of the deadline. The 16³ section is the same unit the
+old 16³ chunk was, so per-unit cost is directly comparable across the scale change
+([performance.md](performance.md)).
 
 **Player** — driven from `Game`:
 
@@ -155,6 +163,11 @@ The chunk lifecycle *is* the data layout:
 
 The player entity is created once with all four types and `PlayerTag`, and never migrates: it has
 no pending work, only per-frame state.
+
+A chunk leaves `NeedsMesh` only after all 64 sections are meshed. `NeedsCollision` stays until
+every section's collision is decided (or is proven all-air), so a player walking can bring
+sections that were outside the proximity gate into range and they are built then — dropping the
+tag early would leave the player walking through a meshed-but-collisionless section.
 
 ## Decoupling: what talks to what
 
@@ -218,29 +231,149 @@ Gameplay never mutates the world; it proposes an edit and the world decides.
 ```
 
 - **`BlockBehaviors.Collect`** expands one request into the set of blocks it removes, bounded by
-  both radius and `MaxBlocksPerBreak`. Felling a tree takes the connected trunk and its canopy.
-  Vein mining, leaf decay and falling sand are the same hook. The rule belongs to the block, so
-  every client of the pipeline gets it.
+  `MaxBlocksPerBreak` (derived from `TerrainGenerator.MaxTreeBlocks()`). Vein mining, leaf decay
+  and falling sand are the same hook. The rule belongs to the block, so every client of the
+  pipeline gets it.
+- **Tree identity comes from the generator spec, never from block type or connectivity.**
+  `TerrainGenerator.TryGetTree(column, out TreeSpec)` is a pure function of the seed and the
+  column, and `TreeSpec.Contains(x, y, z)` answers whether a cell belongs to that tree — zero
+  storage, no provenance bits on voxels. Inferring a tree from "these cells are `Wood` and
+  connected" would chain a player's log cabin into one felling; the spec does not, so breaking one
+  cell of a player-built wall removes exactly that cell.
+  - **Known boundary:** a player-placed block *inside* a generated tree's spec volume is
+    indistinguishable from a generated cell and is taken with the tree. That is accepted, not a
+    bug; the rejected alternative — a provenance bit/array per voxel ("this cell was player
+    placed") — costs a second per-voxel store and pollutes the block storage layer. Separating
+    blocks from drops is orthogonal: drops are the *product* of a break
+    (see [roadmap.md](roadmap.md)), not the way its range is decided, so the spec does not block
+    them.
+  - **Upgrade path (not now):** if a tree ever needs its own state (health, regrowth), it becomes
+    a per-tree ECS entity — the same pattern as block entities (`BlockPos` + state, one entity per
+    thing). No voxel-store changes.
+- **General rule:** when a world-generated structure must be treated as one thing, align it
+  through a generator spec (pure function, zero storage) — never by marking voxels with their
+  origin. Trees are the first instance; boulders, ore veins and village houses follow the same
+  shape.
 - **`Blocks.HardnessOf`** gives seconds to break by hand (negative = unbreakable). `PlayerMining`
   accumulates `delta / hardness` on the crosshair block and only emits a request at 1.0.
 - **Placement legality lives in exactly one function**, `PlayerSystems.RequestPlaceAtCrosshair`,
   called by both the interactive and the scripted path: `RMB click -> Build -> interactable target? interact : RequestEdit(Place, ...)`.
 - Requests are applied before meshing in the same frame, so a multi-block break across chunk
   borders is just N `MarkDirty` calls that the existing systems already handle.
+- **Known behaviour: edit application is not budgeted, only the work it triggers is.** One frame
+  drains the whole request list (`RequestEdit` only appends; the applier loops it and clears it),
+  while generation, meshing and collision run against the shared `ChunkWorkBudgetMs = 3 ms`
+  deadline. A script that queues thousands of breaks in one frame therefore empties the blocks in a
+  single frame while its chunk is still being re-meshed section by section — **a batch edit can
+  outrun the collision rebuild.** Any consumer that digs and then drops something into the hole
+  must poll the *post-edit* freshness itself (the demo's dig gate does exactly this: it holds the
+  body one 16³ section at a time, holding it at the frontier while every dug column below is
+  verified by a per-column assertion — "no collision surface where the block data is air" — and
+  failing loudly if a step cannot clear inside its frame budget). This is a test-script extreme; a
+  player breaking blocks one at a time cannot reach it.
+  - **Corollary: waiting for a whole shaft to become collision-fresh is impossible.** The collision
+    pass rebuilds a section only when the player's section is within `CollisionRadius` sections of
+    it, so a consumer that stands still at the top of a 41-block shaft can never get its deepest
+    sections rebuilt — the ratchet is what makes each step's wait bounded. Waiting for the *whole*
+    volume at once is not an option, and neither is a single ray down the middle: the dug
+    cross-section is 6 cells wide and the body sweeps 4 of them, so a stale face beside the centre
+    line reads as clear (measured: this gate flaked 2 runs out of 4 because the stale face appeared
+    at x = -2 in one run and at x = +2 in another, with opposite normals, while the centre-line ray
+    reported clear in both).
+  - **Known interaction (measured, and the root cause of a long-standing signature): a stepped
+    surface plus a shaft top taken from one column leaves a top layer inside the shaft.** If a
+    scripted dig starts at the surface height of a single scanned column, a neighbouring column one
+    block higher keeps its own top layer inside the dug volume. The player body then rests on a
+    *corner* of that leftover layer — the physics reads the contact as `onFloor`, so
+    `PlayerSystems.Move` stops applying gravity and the body sits there for the rest of the run
+    (measured: 5 runs out of 5, feet 0.278 above the leftover face, exactly one contact with normal
+    `(0, 0.86, -0.51)`). It gets onto it through `Move`'s anti-stuck guard
+    (`IsSolid(feet + 0.4)` → `TeleportToSurface`), which lifts it out of the freshly dug cell onto
+    the leftover layer beside it. That is the real cause of the "`onFloor` true, velocity zero,
+    nothing under the body" signature that looked like stale collision for several rounds — a
+    leftover block, not collision and not streaming. Scripted digs must take their top layer from
+    the **maximum** surface over the whole cross-section and derive their layer count from the cell
+    the body's feet rest on, so the floor lands the intended number of layers below the body's start
+    face: cell index and face value differ by one, and mixing them leaves the drop a block short.
+- **Invariant: the block under the player's feet must be breakable, whether or not its section
+  has been meshed.** Collision for a meshless (fully solid or buried) section falls back to a
+  `BoxShape3D`, so the player can stand on terrain the mesher has not touched; the break path must
+  decide from block data alone and never from `ChunkVisual.Meshes` / `Cursor`. "Stand on it, cannot
+  mine it" is a silent regression class and must stay asserted headlessly.
+
+## The ×4 scale conversion rule
+
+The world is built at four times the original linear scale: a 64³ chunk of 16³ sections replaces
+the 16³ chunk, and every length, velocity and acceleration in the gameplay layer was multiplied
+by four so the world *feels* the same (a jump is the same number of body lengths, a tree the same
+number of bodies tall). Times and counts are not scaled: a second is still a second, one break is
+still one request.
+
+> **lengths ×4, velocities ×4, accelerations ×4, times ×1, counts ×1.**
+
+| quantity | before | after | note |
+| --- | --- | --- | --- |
+| chunk / section | 16³ chunk | 64³ chunk = 4³ sections of 16³ | storage/streaming unit vs mesh/collision unit |
+| terrain amplitude | 22 | 88 | |
+| noise frequency | 0.008 | 0.002 | wavelength ×4 |
+| bedrock | −64 | −256 | |
+| sand threshold | sea level −4 | sea level −16 | |
+| stone band | surface −3 | surface −12 | |
+| tree trunk | 1×1×6 | 4×4×24 | `TrunkHalfWidth = 2` |
+| tree height / canopy | +2 / radius 1–2 | +8 / radius 4,8 (dy −4..8) | `MaxTreeHeight = 32` |
+| tree block budget | 256 | 5578 | `TerrainGenerator.MaxTreeBlocks() * 2`, derived |
+| fell radius | 5 | 20 | |
+| player capsule | r 0.35 × 1.8 | r 2.0 × 8.0 | 4×4×8 cells |
+| player eye / body box | 1.62 / 0.7×1.9×0.7 | 6.48 / 2.8×7.6×2.8 at offset (1.4, 0.4, 1.4) | |
+| reach / walk / sprint / fly | 6 / 5.5 / 9 / 14 | 24 / 22 / 36 / 56 | |
+| jump / gravity | 8.5 / 26 | 34 / 104 | |
+| mob half-width / height | 0.4 / 0.8 | 1.6 / 3.2 | |
+| mob speed / react / wander / arrive | 3 / 12 / 8 / 1.2 | 12 / 48 / 32 / 4.8 | |
+| mob probe / depenetration | 0.85 / 8 | 3.4 / 32 | |
+| mob spawn ring / despawn | 24 + 8 / 56 | 96 + 32 / 224 | |
+| camera far | 1200 | 4800 | derived |
+| `BlockedAhead` eye offset | 0.9 | 3.6 | derived |
+| `TeleportToSurface` landing offset | +0.5 | +2.0 | derived |
+| mob step-up / recovery sidestep / near-mob | 1 / 1 / 1.5 | 4 / 4 / 6 | derived |
+| bedrock-fall threshold | −16 | −64 | derived |
+| `ChunkWorkBudgetMs` / `MobWorkBudgetMs` | 3 / 1.0 ms | 3 / 1.0 ms | **not scaled**: time |
+| `RetargetSeconds`, `TargetAttempts`, `Epsilon`, `SelectedPerEight`, max mobs, per-frame counts, hash shifts, 24 orientations, ±0.5 crosshair | — | — | **not scaled**: times and counts |
+
+The 4x4x8 body cannot descend a 1-wide shaft. At the shaft wall (r = 0.5 from the body axis) the
+capsule's bottom sits `2 - sqrt(4 - 0.25) = 0.0635` above the feet, so a 1-wide hole lets the body
+sink at most 0.064 blocks; sinking one block needs a shaft about 3.46 wide. A shaft exactly as wide
+as the body (4) is not enough either: its walls sit at r = 2.0 = the capsule radius,
+`2 - sqrt(4 - 4) = 2`, and the body wedges after about two blocks (measured in `--demo`: 40 layers
+excavated at 4x4, sank -0.6). "Dig one column straight down" therefore no longer lowers the player
+at the ×4 body size: a ×4 consequence, not a bug. The `--demo` dig-down gate digs a 5x5 shaft
+(25 cells per layer, walls at r = 2.5) for this reason.
+
+Block hardness was scaled ×0.25 — the inverse of the linear scale — so a hand mines the same
+*physical* depth per second: Stone 0.375 s, Dirt 0.125, Grass 0.15, Sand 0.125, Wood 0.5,
+Plank 0.5, Leaves 0.05, Chest 0.5, Pumpkin 0.25; Air and Bedrock are unbreakable (−1). Leaves at
+0.05 s is near-instant by design, not a bug: 1/4 the linear size makes a single block give way
+quicker, which is the accepted look of the finer granularity.
+
+The memory consequence: a 16³ chunk held two 4096-byte arrays (8 KB); a 64³ chunk holds two
+`ChunkSize³ = 262144`-byte arrays (512 KB) — 64× per chunk. That factor only becomes the whole
+story when the *chunk count* is unchanged (which also means the world's physical size grew ×4 per
+axis); the residency arithmetic that turns it into the shipped 27× is in
+[performance.md](performance.md).
 
 ## Known weaknesses
 
 1. **`ChunkVisual` is on every chunk entity**, including buried chunks that will never render —
-   each carries three node pointers for nothing. Splitting rendering into its own component,
-   added lazily on first mesh, is the fix.
+   each carries three lazily-allocated 64-entry node arrays for nothing. Splitting rendering into
+   its own component, added lazily on first mesh, is the fix.
 2. **The player entity is created by the view** (`Player._Ready`). Factory or system should own
    entity creation; the view should only supply node handles. Mobs do not repeat this: `MobSpawner`
    is the factory and the view node is just the handle it stores.
 3. **Systems are static methods taking the store as a parameter**, so there is no per-system
    state or configuration.
-4. **The mesher allocates ~430 KB per chunk** (lists plus `ToArray()` marshalling, now with the
-   per-vertex UV and tile-index streams). The millisecond budget absorbs it; a two-pass
-   count-then-fill mesher would remove the garbage.
+4. **The mesher allocates ~430 KB per section** (lists plus `ToArray()` marshalling, with the
+   per-vertex UV and tile-index streams) — the same 16³ work the old chunk did, now ×64 sections
+   per chunk. The millisecond budget absorbs it; a two-pass count-then-fill mesher would remove
+   the garbage.
 5. **Chunk-border face culling depends on generation timing.** `VoxelWorld.GetBlock` falls back to
    the heightmap (`Air` above the surface) for a not-yet-generated neighbour chunk, and the mesher
    culls border faces against it, so tree canopies and other above-surface art at chunk borders

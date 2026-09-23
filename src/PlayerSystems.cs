@@ -85,13 +85,13 @@ public enum ClickAction : byte { None, Interact, Place }
 /// </summary>
 public static class PlayerSystems
 {
-	public const float Reach = 6f;
-	public const float EyeHeight = 1.62f;
-	private const float WalkSpeed = 5.5f;
-	private const float SprintSpeed = 9f;
-	private const float FlySpeed = 14f;
-	private const float Gravity = 26f;
-	private const float JumpVelocity = 8.5f;
+	public const float Reach = 24f;
+	public const float EyeHeight = 6.48f;
+	private const float WalkSpeed = 22f;
+	private const float SprintSpeed = 36f;
+	private const float FlySpeed = 56f;
+	private const float Gravity = 104f;
+	private const float JumpVelocity = 34f;
 
 	/// <summary>Keyboard and mouse buttons -> intent. The only place that reads Input.</summary>
 	public static void PollInput(EntityStore store)
@@ -170,9 +170,9 @@ public static class PlayerSystems
 
 			// A kinematic body that ends up inside solid geometry has no way out: MoveAndSlide
 			// accumulates velocity but cannot depenetrate. Put the player back on the surface.
-			var feet = node.GlobalPosition + new Vector3(0, 0.1f, 0);
+			var feet = node.GlobalPosition + new Vector3(0, 0.4f, 0);
 			if (Blocks.IsSolid(world.GetBlock(Mathf.FloorToInt(feet.X), Mathf.FloorToInt(feet.Y), Mathf.FloorToInt(feet.Z)))
-				|| node.GlobalPosition.Y < world.BedrockY - 16f) TeleportToSurface(entity, world);
+				|| node.GlobalPosition.Y < world.BedrockY - 64f) TeleportToSurface(entity, world);
 		});
 	}
 
@@ -210,6 +210,7 @@ public static class PlayerSystems
 			mining.Progress = 0f;
 		});
 	}
+
 
 	/// <summary>Canonical allowed value list per block, ordered by <see cref="Orientation.ToIndex"/>
 	/// starting at the identity row (row 8): 0, 10..24, 1..8 for Any, so Upright reads as the
@@ -352,12 +353,18 @@ public static class PlayerSystems
 		int wx = Mathf.FloorToInt(node.GlobalPosition.X);
 		int wz = Mathf.FloorToInt(node.GlobalPosition.Z);
 		int y = world.SurfaceY(wx, wz);
-		world.EnsureAreaAround(new Vector3(wx + 0.5f, y, wz + 0.5f), 1);
-		node.GlobalPosition = new Vector3(wx + 0.5f, y + 0.5f, wz + 0.5f);
+		world.EnsureAreaAround(new Vector3(wx + 2f, y, wz + 2f), 0); // only the landing chunk is forced; the rest streams
+		node.GlobalPosition = new Vector3(wx + 2f, y + 2f, wz + 2f);
 		node.Velocity = Vector3.Zero;
 	}
 
 	// ---- helpers shared by the systems and the scripted tests ------------
+
+	/// <summary>Raw ray behind <see cref="CrosshairBlock"/>: the scripted dig gate logs the hit
+	/// point and normal when the resolved cell is not usable.</summary>
+	public static bool ProbeRay(VoxelWorld world, CharacterBody3D node, float yaw, float pitch,
+		out Vector3 point, out Vector3 normal)
+		=> Raycast(world, node, yaw, pitch, out point, out normal);
 
 	/// <summary>Block under the crosshair, if it is solid.</summary>
 	public static bool CrosshairBlock(VoxelWorld world, CharacterBody3D node, float yaw, float pitch, out Vector3I cell)
@@ -430,7 +437,7 @@ public static class PlayerSystems
 		ref var state = ref player.GetComponent<PlayerState>();
 		ref var body = ref player.GetComponent<PlayerBody>();
 		var node = body.Node;
-		var eye = node.GlobalPosition + new Vector3(0, 0.9f, 0);
+		var eye = node.GlobalPosition + new Vector3(0, 3.6f, 0);
 		var dir = -Basis.FromEuler(new Vector3(0, state.Yaw, 0)).Z;
 		var query = PhysicsRayQueryParameters3D.Create(eye, eye + dir * distance);
 		query.Exclude = new Godot.Collections.Array<Rid> { node.GetRid() };
@@ -468,7 +475,7 @@ public static class PlayerSystems
 		=> new(Mathf.FloorToInt(p.X), Mathf.FloorToInt(p.Y), Mathf.FloorToInt(p.Z));
 
 	private static Aabb PlayerBox(CharacterBody3D node)
-		=> new(node.GlobalPosition - new Vector3(0.35f, 0.1f, 0.35f), new Vector3(0.7f, 1.9f, 0.7f));
+		=> new(node.GlobalPosition - new Vector3(1.4f, 0.4f, 1.4f), new Vector3(2.8f, 7.6f, 2.8f));
 
 	private static Aabb BlockBox(Vector3I cell) => new(new Vector3(cell.X, cell.Y, cell.Z), Vector3.One);
 }
