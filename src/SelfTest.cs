@@ -24,20 +24,31 @@ public static class SelfTest
 		Check(world.LoadedChunks > 0, $"spawn area generated ({world.LoadedChunks} chunks)");
 
 		int surface = world.HeightAt(0, 0);
+		// The world's ceiling: above every surface and every tree, at any column.
+		int clearSkyY = world.SeaLevel + world.Terrain.HeightAmplitude + TerrainGenerator.MaxTreeHeight + 1;
 		Check(surface is > -30 and < 30, $"height in range ({surface})");
 		Check(world.HeightAt(3, 7) == world.HeightAt(3, 7), "height function is deterministic");
 		Check(world.GetBlock(0, surface, 0) is Block.Grass or Block.Sand, $"surface block ({world.GetBlock(0, surface, 0)})");
-		Check(world.GetBlock(0, surface - 6, 0) == Block.Stone, "stone under the surface");
-		Check(world.GetBlock(0, surface + 40, 0) == Block.Air, "air high above the surface");
+		// Probe the soil band through REAL chunks: without one, GetBlock falls back to the
+		// heightmap (Stone below the surface) and both checks would be green for the wrong reason.
+		world.EnsureAreaAround(new Vector3(0.5f, surface, 0.5f), 0);
+		world.CreateChunk(VoxelWorld.ChunkKeyOf(0, surface - 6, 0));
+		world.CreateChunk(VoxelWorld.ChunkKeyOf(0, surface - 13, 0));
+		Check(world.TryGetChunk(0, surface - 6, 0, out _) && world.TryGetChunk(0, surface - 13, 0, out _),
+			"the soil-band column is resident, not read through the heightmap approximation");
+		Check(world.GetBlock(0, surface - 6, 0) == Block.Dirt, "dirt under the surface");
+		Check(world.GetBlock(0, surface - 13, 0) == Block.Stone, "stone under the soil band");
+		Check(world.GetBlock(0, clearSkyY, 0) == Block.Air, "air high above the surface");
 		Check(world.GetBlock(0, world.BedrockY, 0) == Block.Bedrock, "bedrock at the bottom");
 		Check(!Blocks.IsBreakable(Block.Bedrock), "bedrock is unbreakable");
 
 		int min = int.MaxValue, max = int.MinValue;
 		double sum = 0;
 		int samples = 0;
-		for (int z = -64; z < 64; z += 2)
+		// Same 64x64 sample grid as the 16-block scale, x4 spacing.
+		for (int z = -256; z < 256; z += 8)
 		{
-			for (int x = -64; x < 64; x += 2)
+			for (int x = -256; x < 256; x += 8)
 			{
 				int h = world.HeightAt(x, z);
 				min = Mathf.Min(min, h);
@@ -50,10 +61,13 @@ public static class SelfTest
 		Check(max - min >= 6, $"terrain has relief ({max - min} blocks)");
 		Check(min < 0 && max > 0, $"terrain spans negative and positive Y ({min}..{max})");
 
+		// A 192-wide window, guaranteed loaded by EnsureAreaAround(origin, 2) below; step 4
+		// hits every 4x4 trunk.
+		world.EnsureAreaAround(new Vector3(0.5f, 0f, 0.5f), 2);
 		int wood = 0;
-		for (int z = -16; z < 32; z++)
-			for (int x = -16; x < 32; x++)
-				for (int y = -20; y < 40; y++)
+		for (int z = -96; z < 96; z += 4)
+			for (int x = -96; x < 96; x += 4)
+				for (int y = -128; y < 128; y++)
 					if (world.GetBlock(x, y, z) == Block.Wood) wood++;
 		Check(wood > 0, $"trees generated ({wood} wood blocks in the spawn chunks)");
 
@@ -69,9 +83,10 @@ public static class SelfTest
 
 		var terrainEntity = world.CreateChunk(VoxelWorld.ChunkKeyOf(0, surface, 0));
 		int terrainIndices = CountIndices(world, terrainEntity);
+		int terrainExpected = ExpectedIndices(world, terrainEntity);
 		Check(terrainIndices > 36, $"terrain chunk has geometry ({terrainIndices / 6} faces)");
-		Check(terrainIndices == ExpectedIndices(world, terrainEntity),
-			$"mesher matches brute force ({terrainIndices / 6} vs {ExpectedIndices(world, terrainEntity) / 6} faces)");
+		Check(terrainIndices == terrainExpected,
+			$"mesher matches brute force ({terrainIndices / 6} vs {terrainExpected / 6} faces)");
 
 		// Slab high above the terrain, where every neighbour reads as air:
 		// 256 top + 256 bottom + 4 * 16 * 11 sides = 1216 faces.
@@ -79,12 +94,12 @@ public static class SelfTest
 		var slabBlocks = slab.GetComponent<ChunkBlocks>().Value;
 		Array.Clear(slabBlocks);
 		for (int y = 0; y <= 10; y++)
-			for (int z = 0; z < 16; z++)
-				for (int x = 0; x < 16; x++) slabBlocks[ChunkBlocks.Index(x, y, z)] = (byte)Block.Stone;
+			for (int z = 0; z < VoxelWorld.SectionSize; z++)
+				for (int x = 0; x < VoxelWorld.SectionSize; x++) slabBlocks[ChunkBlocks.Index(x, y, z)] = (byte)Block.Stone;
 		int slabIndices = CountIndices(world, slab);
 		Check(slabIndices == 1216 * 6, $"solid slab has all faces ({slabIndices / 6} vs 1216)");
 
-		var slabMesh = ChunkMesher.Build(world, slab.GetComponent<ChunkCoord>(), slabBlocks, out _);
+		var slabMesh = ChunkMesher.Build(world, slab.GetComponent<ChunkCoord>(), new Vector3I(0, 0, 0), slabBlocks, out _);
 		var arrays = slabMesh.SurfaceGetArrays(0);
 		var verts = (Vector3[])arrays[(int)Mesh.ArrayType.Vertex];
 		var norms = (Vector3[])arrays[(int)Mesh.ArrayType.Normal];
@@ -104,9 +119,8 @@ public static class SelfTest
 		}
 		Check(badWinding == 0, $"all {idx.Length / 3} slab triangles wind clockwise for Godot ({badWinding} wrong)");
 
-		var terrainMesh = ChunkMesher.Build(world, terrainEntity.GetComponent<ChunkCoord>(),
-			terrainEntity.GetComponent<ChunkBlocks>().Value, out _);
-		Check(WindingErrors(terrainMesh) == 0, "terrain triangles wind clockwise too");
+		Check(WindingErrors(world, terrainEntity.GetComponent<ChunkCoord>(),
+			terrainEntity.GetComponent<ChunkBlocks>().Value) == 0, "terrain triangles wind clockwise too");
 
 		// ---- unbounded vertical ----------------------------------------
 		var sky = new Vector3I(5, 3000, 5);
@@ -116,7 +130,8 @@ public static class SelfTest
 		Check(world.TryGetChunk(sky.X, sky.Y, sky.Z, out var skyChunk)
 			&& skyChunk.Tags.Has<KeepAlive>(), "player-built chunk is pinned against unloading");
 
-		var deep = new Vector3I(-3, -40, 7);
+		// Below the x4 surface band (>= -88) and the focus bubble (+-2 chunks): never generated.
+		var deep = new Vector3I(-3, -160, 7);
 		Check(!world.TryGetChunk(deep.X, deep.Y, deep.Z, out _), "buried chunks are never generated");
 		Check(world.GetBlock(deep.X, deep.Y, deep.Z) == Block.Stone, "buried unloaded chunk still reads as stone");
 		Check(world.GetBlock(deep.X, world.BedrockY - 500, deep.Z) == Block.Bedrock,
@@ -155,7 +170,7 @@ public static class SelfTest
 		world.RequestEdit(EditRequest.Break(new Vector3I(0, world.BedrockY, 0), default));
 		Check(world.ApplyPendingEdits() == 0, "a bedrock break request is refused");
 
-		var air = new Vector3I(4, world.HeightAt(4, 4) + 30, 4);
+		var air = new Vector3I(4, clearSkyY, 4);
 		Check(world.GetBlock(air.X, air.Y, air.Z) == Block.Air, "target cell starts as air");
 		world.RequestEdit(EditRequest.Place(air, Block.Plank, default));
 		Check(world.ApplyPendingEdits() == 1, "a place request is applied");
@@ -165,23 +180,78 @@ public static class SelfTest
 
 		// One break is not one block: a wood block takes the tree with it.
 		Vector3I? trunk = null;
-		for (int y = -20; y < 40 && trunk == null; y++)
-			for (int z = -16; z < 32 && trunk == null; z++)
-				for (int x = -16; x < 32 && trunk == null; x++)
+		for (int z = -96; z < 96 && trunk == null; z += 4)
+			for (int x = -96; x < 96 && trunk == null; x += 4)
+				for (int y = -128; y < 128 && trunk == null; y++)
 					if (world.GetBlock(x, y, z) == Block.Wood) trunk = new Vector3I(x, y, z);
 		Check(trunk.HasValue, "found a tree to fell");
 		if (trunk.HasValue)
 		{
-			int woodBefore = CountBlocks(world, Block.Wood);
-			int leavesBefore = CountBlocks(world, Block.Leaves);
+			int reach = TerrainGenerator.MaxTreeHeight;
+			int woodBefore = CountTreeBlocks(world, Block.Wood, trunk.Value, reach, reach);
+			int leavesBefore = CountTreeBlocks(world, Block.Leaves, trunk.Value, reach, reach);
 			world.RequestEdit(EditRequest.Break(trunk.Value, default));
 			Check(world.ApplyPendingEdits() == 1, "the fell request is applied");
-			int woodGone = woodBefore - CountBlocks(world, Block.Wood);
-			int leavesGone = leavesBefore - CountBlocks(world, Block.Leaves);
+			int woodGone = woodBefore - CountTreeBlocks(world, Block.Wood, trunk.Value, reach, reach);
+			int leavesGone = leavesBefore - CountTreeBlocks(world, Block.Leaves, trunk.Value, reach, reach);
 			Check(woodGone > 1, $"felling removes the whole trunk ({woodGone} wood blocks)");
 			Check(leavesGone > 0, $"felling takes the canopy too ({leavesGone} leaves)");
-			Check(BlockBehaviors.MaxBlocksPerBreak >= 64, "the fell budget is bounded");
 		}
+
+		// Boss: one break must fell a whole tree - trunk and canopy, nothing left in the tree's
+		// own box. Pick a maximal tree; the box is the trunk column +-TrunkHalfWidth from the
+		// public constants, so overlapping neighbour canopies cannot poison it.
+		Vector3I? maximal = null;
+		int tallest = 0;
+		for (int z = -96; z < 96 && maximal == null; z += 4)
+			for (int x = -96; x < 96 && maximal == null; x += 4)
+				for (int y = -128; y < 128 && maximal == null; y++)
+				{
+					if (world.GetBlock(x, y, z) != Block.Wood) continue;
+					int baseY = y;
+					while (world.GetBlock(x, baseY - 1, z) == Block.Wood) baseY--;
+					int topY = y;
+					while (world.GetBlock(x, topY + 1, z) == Block.Wood) topY++;
+					tallest = topY - baseY + 1;
+					if (tallest == TerrainGenerator.MaxTrunkHeight) maximal = new Vector3I(x, baseY, z);
+				}
+		Check(maximal.HasValue, $"found a maximal tree ({tallest} trunk blocks tall)");
+		// MaxTreeBlocks() is the supremum of a tree's spec volume; a maximal-height tree must
+		// reach it. (MaxBlocksPerBreak >= MaxTreeBlocks would be the same expression twice.)
+		if (maximal.HasValue)
+		{
+			bool haveSpec = world.Terrain.TryGetTreeAt(maximal.Value.X, maximal.Value.Y, maximal.Value.Z, out var maxSpec);
+			Check(haveSpec, "the maximal tree's cell resolves to its spec");
+			if (haveSpec)
+			{
+				int maxVolume = SpecVolume(maxSpec);
+				Check(maxVolume == TerrainGenerator.MaxTreeBlocks(),
+					$"a maximal tree's spec volume is the MaxTreeBlocks supremum ({maxVolume} vs {TerrainGenerator.MaxTreeBlocks()})");
+			}
+		}
+		if (maximal.HasValue)
+		{
+			// The tree's own box: the trunk column +-TrunkHalfWidth, baseY..baseY+MaxTreeHeight.
+			// The old wider box also contained whole neighbour trees, so "nothing left" could
+			// never hold in a forest; this one can.
+			int treeReach = TerrainGenerator.TrunkHalfWidth;
+			int woodInBox = CountTreeBlocks(world, Block.Wood, maximal.Value, treeReach, TerrainGenerator.MaxTreeHeight);
+			int leavesInBox = CountTreeBlocks(world, Block.Leaves, maximal.Value, treeReach, TerrainGenerator.MaxTreeHeight);
+			Check(woodInBox > 0 && leavesInBox > 0, $"the maximal tree stands ({woodInBox} wood, {leavesInBox} leaves in its box)");
+			// The cap is a silent-truncation safety valve in production; correctness is owned by
+			// "collected == spec volume", the cap only bounds the worst case.
+			int collected = BlockBehaviors.Collect(world, Block.Wood, maximal.Value).Count;
+			Check(collected <= BlockBehaviors.MaxBlocksPerBreak,
+				$"the fell is capped by the budget ({collected} <= {BlockBehaviors.MaxBlocksPerBreak} blocks)");
+			world.RequestEdit(EditRequest.Break(maximal.Value, default));
+			Check(world.ApplyPendingEdits() == 1, "the maximal-tree fell request is applied");
+			int woodLeft = CountTreeBlocks(world, Block.Wood, maximal.Value, treeReach, TerrainGenerator.MaxTreeHeight);
+			int leavesLeft = CountTreeBlocks(world, Block.Leaves, maximal.Value, treeReach, TerrainGenerator.MaxTreeHeight);
+			Check(woodLeft == 0 && leavesLeft == 0,
+				$"one break fells the tree's own box, nothing left ({woodLeft} wood, {leavesLeft} leaves)");
+		}
+
+		CheckTreeIdentity(world);
 
 		// A second world must be able to have completely different terrain.
 		var other = new VoxelWorld { Terrain = new TerrainGenerator(seed: 99, heightAmplitude: 8) };
@@ -190,7 +260,7 @@ public static class SelfTest
 		other.Free();
 
 		// ---- coordinates -------------------------------------------------
-		var target = new Vector3I(1 * 16, 40, 1 * 16);
+		var target = new Vector3I(1 * VoxelWorld.ChunkSize, 2 * VoxelWorld.ChunkSize, 1 * VoxelWorld.ChunkSize);
 		Check(world.SetBlock(target.X, target.Y, target.Z, Block.Plank), "set block across chunk coords");
 		Check(world.GetBlock(target.X, target.Y, target.Z) == Block.Plank, "read back the placed block");
 		Check(world.SetBlock(target.X, target.Y, target.Z, Block.Air), "clear the test block");
@@ -218,6 +288,8 @@ public static class SelfTest
 		CheckMobs(world);
 		CheckTextureVariants(world);
 		CheckSizeClasses(world);
+		CheckCollisionGate(world);
+		CheckSupportCollision(world);
 
 		return _failures;
 	}
@@ -331,28 +403,39 @@ public static class SelfTest
 		for (int i = 0; i < 10 && MobSpawner.Count(leaveWorld.Store) == 0; i++) MobSystems.Spawn(leaveWorld);
 		Entity leaver = FirstMob(leaveWorld.Store);
 		var leaverNode = leaver.GetComponent<MobVisual>().Node;
-		leaver.GetComponent<MobXform>().Position = new Vector3(100.5f, 50f, 0.5f);
+		leaver.GetComponent<MobXform>().Position = new Vector3(MobSystems.DespawnRadius + 16f, 50f, 0.5f);
 		int beforeLeave = MobSpawner.Count(leaveWorld.Store);
 		MobSystems.Spawn(leaveWorld);
 		Check(beforeLeave >= 1 && leaver.IsNull && leaverNode.IsQueuedForDeletion(),
 			$"a mob past DespawnRadius is deleted with its node ({beforeLeave} before)");
 
 		var faller = leaveWorld.Store.CreateEntity(
-			new MobXform { Position = new Vector3(0.5f, leaveWorld.BedrockY - 17f, 0.5f) },
+			new MobXform { Position = new Vector3(0.5f, leaveWorld.BedrockY - 65f, 0.5f) },
 			new MobVelocity(),
 			new MobAi { Rng = 11 },
 			new MobVisual(),
 			Tags.Get<Mob>());
 		MobSystems.Spawn(leaveWorld);
-		Check(faller.IsNull, $"a mob below BedrockY - 16 is deleted");
+		Check(faller.IsNull, "a mob below BedrockY - 64 is deleted");
+
+		var nearBedrock = leaveWorld.Store.CreateEntity(
+			new MobXform { Position = new Vector3(0.5f, leaveWorld.BedrockY - 16f, 0.5f) },
+			new MobVelocity(),
+			new MobAi { Rng = 12 },
+			new MobVisual(),
+			Tags.Get<Mob>());
+		MobSystems.Spawn(leaveWorld);
+		Check(!nearBedrock.IsNull, "a mob above BedrockY - 64 is kept");
 		leaveWorld.Free();
 
 		// -- AI is a pure function ----------------------------------------
 		var air = new TestBlocks();
 
+		// Distance 8 > ArriveRadius (4.8); at 2.0 the AI would call the target arrived and
+		// never re-pick it.
 		var wall = new TestBlocks();
-		wall.Solid.Add((2, 0, 0));
-		var aiTarget = new MobAi { Rng = 12345, TargetX = 2.5f, TargetZ = 0.5f, Retarget = 100f };
+		wall.Solid.Add((8, 0, 0));
+		var aiTarget = new MobAi { Rng = 12345, TargetX = 8.5f, TargetZ = 0.5f, Retarget = 100f };
 		MobAiRules.Decide(wall, ref aiTarget, 0.5f, 0f, 0.5f, 100f, 0f, 0.5f, 1f / 60f);
 		bool repicked = aiTarget.TargetX != 2.5f || aiTarget.TargetZ != 0.5f;
 		bool targetFree = !wall.Solid.Contains((Mathf.FloorToInt(aiTarget.TargetX), 0, Mathf.FloorToInt(aiTarget.TargetZ)));
@@ -387,29 +470,28 @@ public static class SelfTest
 			&& copyWander.TargetX == aiWander.TargetX && copyWander.TargetZ == aiWander.TargetZ,
 			"identical AI state and inputs give an identical move");
 
+		// The probe is 3.4 cells ahead (HalfWidth + a step): one old block is 4 cells high.
 		var step = new TestBlocks();
-		step.Solid.Add((1, 0, 0));
+		for (int y = 0; y < 4; y++) step.Solid.Add((3, y, 0));
 		var aiStep = new MobAi { Rng = 1, TargetX = 8.5f, TargetZ = 0.5f, Retarget = 100f };
 		var stepMove = MobAiRules.Decide(step, ref aiStep, 0.5f, 0f, 0.5f, 100f, 0f, 0.5f, 1f / 60f);
 		Check(stepMove.StepUp && stepMove.DirX > 0.99f, "a one-block step sets StepUp and keeps the direction");
 
 		var blocked = new TestBlocks();
-		blocked.Solid.Add((1, 0, 0));
-		blocked.Solid.Add((1, 1, 0));
+		for (int y = 0; y < 8; y++) blocked.Solid.Add((3, y, 0));
 		var aiBlocked = new MobAi { Rng = 1, TargetX = 8.5f, TargetZ = 0.5f, Retarget = 100f };
 		var blockedMove = MobAiRules.Decide(blocked, ref aiBlocked, 0.5f, 0f, 0.5f, 100f, 0f, 0.5f, 1f / 60f);
 		Check(blockedMove.DirX == -1f && blockedMove.DirZ == 0f && !blockedMove.StepUp,
 			$"a two-high wall turns the mob onto the free axis ({blockedMove.DirX}, {blockedMove.DirZ})");
 
 		var sealedBox = new TestBlocks();
-		sealedBox.Solid.Add((1, 0, 0));
-		sealedBox.Solid.Add((1, 1, 0));
-		sealedBox.Solid.Add((-1, 0, 0));
-		sealedBox.Solid.Add((-1, 1, 0));
-		sealedBox.Solid.Add((0, 0, 1));
-		sealedBox.Solid.Add((0, 1, 1));
-		sealedBox.Solid.Add((0, 0, -1));
-		sealedBox.Solid.Add((0, 1, -1));
+		for (int y = 0; y < 8; y++)
+		{
+			sealedBox.Solid.Add((3, y, 0));
+			sealedBox.Solid.Add((-3, y, 0));
+			sealedBox.Solid.Add((0, y, 3));
+			sealedBox.Solid.Add((0, y, -3));
+		}
 		var aiSealed = new MobAi { Rng = 2, TargetX = 8.5f, TargetZ = 0.5f, Retarget = 100f };
 		var sealedMove = MobAiRules.Decide(sealedBox, ref aiSealed, 0.5f, 0f, 0.5f, 100f, 0f, 0.5f, 1f / 60f);
 		Check(sealedMove.DirX == 0f && sealedMove.DirZ == 0f && aiSealed.Retarget == 0f,
@@ -462,18 +544,30 @@ public static class SelfTest
 	/// returns mob positions in creation order.</summary>
 	private static Vector3[] SimulateMobs(VoxelWorld world, int ticks)
 	{
-		world.EnsureAreaAround(world.FindSpawn(), 2);
-		world.Focus = new Vector3(0.5f, 0f, 0.5f);
-		for (int i = 0; i < ticks; i++)
+		// The tick's wall-clock throttle processes a load-dependent prefix of the mobs each
+		// frame (first call cold, second hot), so a determinism assertion must switch it off;
+		// restore it in finally so later tests still see the shipped budget.
+		double budget = MobSystems.MobWorkBudgetMs;
+		MobSystems.MobWorkBudgetMs = double.PositiveInfinity;
+		try
 		{
-			MobSystems.Spawn(world);
-			MobSystems.Tick(world, 1f / 60f);
-			MobSystems.SyncVisuals(world.Store);
+			world.EnsureAreaAround(world.FindSpawn(), 2);
+			world.Focus = new Vector3(0.5f, 0f, 0.5f);
+			for (int i = 0; i < ticks; i++)
+			{
+				MobSystems.Spawn(world);
+				MobSystems.Tick(world, 1f / 60f);
+				MobSystems.SyncVisuals(world.Store);
+			}
+			var positions = new List<Vector3>();
+			world.Store.Query<MobXform>().AllTags(Tags.Get<Mob>())
+				.ForEachEntity((ref MobXform xform, Entity entity) => positions.Add(xform.Position));
+			return positions.ToArray();
 		}
-		var positions = new List<Vector3>();
-		world.Store.Query<MobXform>().AllTags(Tags.Get<Mob>())
-			.ForEachEntity((ref MobXform xform, Entity entity) => positions.Add(xform.Position));
-		return positions.ToArray();
+		finally
+		{
+			MobSystems.MobWorkBudgetMs = budget;
+		}
 	}
 
 	private static Entity FirstMob(EntityStore store)
@@ -499,14 +593,201 @@ public static class SelfTest
 			=> Solid.Contains((x, y, z)) ? Block.Stone : Block.Air;
 	}
 
-	private static int CountBlocks(VoxelWorld world, Block block)
+	/// <summary>Counts a block in the box a tree can occupy: <paramref name="reach"/> cells
+	/// horizontally around <paramref name="baseCell"/>, <paramref name="height"/> above it.</summary>
+	private static int CountTreeBlocks(VoxelWorld world, Block block, Vector3I baseCell, int reach, int height)
 	{
 		int count = 0;
-		for (int y = -25; y < 45; y++)
-			for (int z = -20; z < 36; z++)
-				for (int x = -20; x < 36; x++)
-					if (world.GetBlock(x, y, z) == block) count++;
+		for (int dy = 0; dy <= height; dy++)
+			for (int dz = -reach; dz <= reach; dz++)
+				for (int dx = -reach; dx <= reach; dx++)
+					if (world.GetBlock(baseCell.X + dx, baseCell.Y + dy, baseCell.Z + dz) == block) count++;
 		return count;
+	}
+
+	/// <summary>Tree identity is the generator's spec, not Wood connectivity: a player-built
+	/// wall must not fell like a tree, a generated tree must fall exactly as its spec says, and
+	/// a player block inside a spec volume is a known, accepted casualty. Every check here can
+	/// fail.</summary>
+	private static void CheckTreeIdentity(VoxelWorld world)
+	{
+		GD.Print("  ---- tree identity (generator spec) ----");
+
+		// -- 1. a player-built wall: one break removes exactly one cell --------------
+		// No anchor column within a canopy radius of any wall cell: Collect's anchor search
+		// cannot find a spec, so the wall is not a tree. Above every canopy as well.
+		int wallX = int.MinValue, wallZ = int.MinValue;
+		int canopy = TerrainGenerator.CanopyMaxRadius;
+		for (int z = -96; z < 96 && wallX == int.MinValue; z += 4)
+			for (int x = -96; x < 96 && wallX == int.MinValue; x += 4)
+			{
+				bool clear = true;
+				for (int az = z - canopy; az <= z + canopy && clear; az++)
+					for (int ax = x - canopy; ax <= x + 3 + canopy && clear; ax++)
+						if (world.Terrain.TryGetTree(ax, az, out _)) clear = false;
+				if (clear) { wallX = x; wallZ = z; }
+			}
+		Check(wallX != int.MinValue, "found a wall spot with no tree anchor within a canopy radius");
+		if (wallX != int.MinValue)
+		{
+			int wallY = world.SeaLevel + world.Terrain.HeightAmplitude + TerrainGenerator.MaxTreeHeight + 2;
+			CheckPlayerWall(world, wallX, wallY, wallZ, Block.Wood);
+			CheckPlayerWall(world, wallX + 8, wallY, wallZ, Block.Plank);
+		}
+
+		// -- 2. a generated tree: the fell set is exactly the spec's stamped set -----
+		bool haveTree = FindTreeCell(world, out _, out var spec);
+		Check(haveTree, "found a generated tree with stamped blocks");
+		if (haveTree)
+		{
+			var reference = TreeCells(world, spec);
+			Vector3I hit = default;
+			bool haveHit = false;
+			// A non-anchor trunk column on purpose: this covers Collect's anchor search.
+			foreach (var c in reference)
+				if (!haveHit && world.GetBlock(c.X, c.Y, c.Z) == Block.Wood
+					&& (c.X != spec.AnchorX || c.Z != spec.AnchorZ)) { hit = c; haveHit = true; }
+			Check(reference.Count > 0 && haveHit, $"the tree spec has a non-anchor wood cell and a stamped set ({reference.Count} cells)");
+
+			// Neighbour specs within two canopy radii: cells they own outside OUR spec must
+			// survive; cells inside it are shared volume and may be taken (the boundary).
+			var neighbours = new List<Vector3I>();
+			var sharedCells = new List<Vector3I>();
+			int search = 2 * TerrainGenerator.CanopyMaxRadius;
+			for (int dz = -search; dz <= search; dz++)
+				for (int dx = -search; dx <= search; dx++)
+				{
+					if (!world.Terrain.TryGetTree(spec.AnchorX + dx, spec.AnchorZ + dz, out var other)) continue;
+					if (other.AnchorX == spec.AnchorX && other.AnchorZ == spec.AnchorZ && other.MinY == spec.MinY) continue;
+					foreach (var c in TreeCells(world, other))
+					{
+						if (TerrainGenerator.Contains(spec, c.X, c.Y, c.Z)) { sharedCells.Add(c); continue; }
+						neighbours.Add(c);
+					}
+				}
+
+			if (haveHit)
+			{
+				var collected = new HashSet<Vector3I>(BlockBehaviors.Collect(world, Block.Wood, hit));
+				Check(collected.Count <= BlockBehaviors.MaxBlocksPerBreak,
+					$"the fell set is inside the budget ({collected.Count} <= {BlockBehaviors.MaxBlocksPerBreak})");
+				Check(collected.SetEquals(reference),
+					$"the fell set is exactly the spec's stamped set ({collected.Count} vs {reference.Count})");
+
+				world.RequestEdit(EditRequest.Break(hit, default));
+				Check(world.ApplyPendingEdits() == 1, "the generated-tree break is applied");
+				int left = 0;
+				foreach (var c in reference)
+					if (world.GetBlock(c.X, c.Y, c.Z) != Block.Air) left++;
+				Check(left == 0, $"the whole spec cell set is gone ({left} left of {reference.Count})");
+
+				int touched = 0;
+				foreach (var c in neighbours)
+				{
+					var b = world.GetBlock(c.X, c.Y, c.Z);
+					if (b != Block.Wood && b != Block.Leaves) touched++;
+				}
+				Check(touched == 0, $"neighbour trees lose nothing outside the felled spec ({touched} changed, {sharedCells.Count} shared cells)");
+				int sharedLeft = 0;
+				foreach (var c in sharedCells)
+					if (world.GetBlock(c.X, c.Y, c.Z) != Block.Air) sharedLeft++;
+				Check(sharedCells.Count == 0 || sharedLeft == 0,
+					$"neighbour cells inside the felled spec are taken with it ({sharedCells.Count - sharedLeft} of {sharedCells.Count})");
+			}
+		}
+
+		// -- 3. known boundary: a player block inside a spec volume is taken --------
+		bool haveBoundary = FindTreeCell(world, out _, out var boundary);
+		Check(haveBoundary, "found a second tree for the boundary check");
+		if (haveBoundary)
+		{
+			var cells = TreeCells(world, boundary);
+			Vector3I trunkHit = default, planted = default;
+			bool haveTrunk = false, haveLeaf = false;
+			foreach (var c in cells)
+			{
+				var b = world.GetBlock(c.X, c.Y, c.Z);
+				if (!haveTrunk && b == Block.Wood) { trunkHit = c; haveTrunk = true; continue; }
+				if (!haveLeaf && b == Block.Leaves) { planted = c; haveLeaf = true; }
+			}
+			Check(haveTrunk && haveLeaf, "found a trunk cell and a leaf cell inside the spec volume");
+			if (haveTrunk && haveLeaf)
+			{
+				Check(world.SetBlock(planted.X, planted.Y, planted.Z, Block.Wood),
+					"the player plants a wood block inside the tree's spec volume");
+				world.RequestEdit(EditRequest.Break(trunkHit, default));
+				Check(world.ApplyPendingEdits() == 1, "the boundary tree break is applied");
+				Check(world.GetBlock(planted.X, planted.Y, planted.Z) == Block.Air,
+					"a player block inside the spec volume is taken with the tree (known boundary: no provenance)");
+			}
+		}
+	}
+
+	/// <summary>First wood cell in the loaded window that resolves to a spec. GetBlock only
+	/// returns Wood from a real chunk, so this never reads the heightmap approximation.</summary>
+	private static bool FindTreeCell(VoxelWorld world, out Vector3I cell, out TreeSpec spec)
+	{
+		for (int z = -96; z < 96; z += 4)
+			for (int x = -96; x < 96; x += 4)
+				for (int y = -128; y < 128; y++)
+					if (world.GetBlock(x, y, z) == Block.Wood
+						&& world.Terrain.TryGetTreeAt(x, y, z, out spec))
+					{
+						cell = new Vector3I(x, y, z);
+						return true;
+					}
+		cell = default;
+		spec = default;
+		return false;
+	}
+
+	/// <summary>The spec's whole volume: every cell Contains accepts, block type ignored.</summary>
+	private static int SpecVolume(TreeSpec spec)
+	{
+		int count = 0;
+		int reach = TerrainGenerator.CanopyMaxRadius;
+		int top = spec.MinY + spec.TrunkHeight - 1 + 8;
+		for (int y = spec.MinY - 4; y <= top; y++)
+			for (int z = spec.AnchorZ - reach; z <= spec.AnchorZ + reach; z++)
+				for (int x = spec.AnchorX - reach; x <= spec.AnchorX + reach; x++)
+					if (TerrainGenerator.Contains(spec, x, y, z)) count++;
+		return count;
+	}
+
+	/// <summary>Cells the spec owns that currently hold Wood or Leaves.</summary>
+	private static List<Vector3I> TreeCells(VoxelWorld world, TreeSpec spec)
+	{
+		var cells = new List<Vector3I>();
+		int reach = TerrainGenerator.CanopyMaxRadius;
+		int top = spec.MinY + spec.TrunkHeight - 1 + 8;
+		for (int y = spec.MinY - 4; y <= top; y++)
+			for (int z = spec.AnchorZ - reach; z <= spec.AnchorZ + reach; z++)
+				for (int x = spec.AnchorX - reach; x <= spec.AnchorX + reach; x++)
+				{
+					if (!TerrainGenerator.Contains(spec, x, y, z)) continue;
+					var b = world.GetBlock(x, y, z);
+					if (b == Block.Wood || b == Block.Leaves) cells.Add(new Vector3I(x, y, z));
+				}
+		return cells;
+	}
+
+	/// <summary>Places a 4x4 wall and asserts one break removes exactly the hit cell.</summary>
+	private static void CheckPlayerWall(VoxelWorld world, int x, int y, int z, Block block)
+	{
+		var cells = new List<Vector3I>();
+		for (int dx = 0; dx < 4; dx++)
+			for (int dy = 0; dy < 4; dy++) cells.Add(new Vector3I(x + dx, y + dy, z));
+		foreach (var c in cells) world.SetBlock(c.X, c.Y, c.Z, block);
+		Check(cells.TrueForAll(c => world.GetBlock(c.X, c.Y, c.Z) == block),
+			$"the player {block} wall stands ({cells.Count} cells)");
+		var hit = cells[5];
+		world.RequestEdit(EditRequest.Break(hit, default));
+		Check(world.ApplyPendingEdits() == 1, $"one break on the player {block} wall is applied");
+		int changed = 0;
+		foreach (var c in cells)
+			if (world.GetBlock(c.X, c.Y, c.Z) != (c == hit ? Block.Air : block)) changed++;
+		Check(changed == 0, $"breaking one cell of a player {block} wall changes exactly that cell ({changed} others)");
+		foreach (var c in cells) world.SetBlock(c.X, c.Y, c.Z, Block.Air);
 	}
 
 	private static int WindingErrors(ArrayMesh mesh)
@@ -526,36 +807,65 @@ public static class SelfTest
 		return bad;
 	}
 
+	/// <summary>Winding errors over every section of a chunk, the mesher's new unit.</summary>
+	private static int WindingErrors(VoxelWorld world, ChunkCoord coord, byte[] blocks)
+	{
+		int bad = 0;
+		for (int sy = 0; sy < VoxelWorld.SectionsPerAxis; sy++)
+			for (int sz = 0; sz < VoxelWorld.SectionsPerAxis; sz++)
+				for (int sx = 0; sx < VoxelWorld.SectionsPerAxis; sx++)
+					bad += WindingErrors(ChunkMesher.Build(world, coord, new Vector3I(sx, sy, sz), blocks, out _));
+		return bad;
+	}
+
 	private static int CountIndices(VoxelWorld world, Entity chunk)
 		=> CountIndices(world, chunk.GetComponent<ChunkCoord>(), chunk.GetComponent<ChunkBlocks>().Value);
 
 	private static int CountIndices(VoxelWorld world, ChunkCoord coord, byte[] blocks)
 	{
-		ChunkMesher.Build(world, coord, blocks, out int indices);
+		int indices = 0;
+		for (int sy = 0; sy < VoxelWorld.SectionsPerAxis; sy++)
+			for (int sz = 0; sz < VoxelWorld.SectionsPerAxis; sz++)
+				for (int sx = 0; sx < VoxelWorld.SectionsPerAxis; sx++)
+				{
+					ChunkMesher.Build(world, coord, new Vector3I(sx, sy, sz), blocks, out int count);
+					indices += count;
+				}
 		return indices;
 	}
 
-	/// <summary>Independent face count straight from the block data, to cross-check the mesher.</summary>
+	/// <summary>Independent per-section face count straight from the block data, to cross-check
+	/// the mesher: the same brute force as before, run over the new 16-cube unit.</summary>
 	private static int ExpectedIndices(VoxelWorld world, Entity chunk)
 	{
 		var coord = chunk.GetComponent<ChunkCoord>();
 		var blocks = chunk.GetComponent<ChunkBlocks>().Value;
-		int bx = coord.X * 16, by = coord.Y * 16, bz = coord.Z * 16;
+		int bx = coord.X * VoxelWorld.ChunkSize, by = coord.Y * VoxelWorld.ChunkSize, bz = coord.Z * VoxelWorld.ChunkSize;
 		int faces = 0;
-		for (int y = 0; y < 16; y++)
+		for (int sy = 0; sy < VoxelWorld.SectionsPerAxis; sy++)
 		{
-			for (int z = 0; z < 16; z++)
+			for (int sz = 0; sz < VoxelWorld.SectionsPerAxis; sz++)
 			{
-				for (int x = 0; x < 16; x++)
+				for (int sx = 0; sx < VoxelWorld.SectionsPerAxis; sx++)
 				{
-					if (!Blocks.IsSolid((Block)blocks[ChunkBlocks.Index(x, y, z)])) continue;
-					int wx = bx + x, wy = by + y, wz = bz + z;
-					if (!Blocks.IsSolid(world.GetBlock(wx + 1, wy, wz))) faces++;
-					if (!Blocks.IsSolid(world.GetBlock(wx - 1, wy, wz))) faces++;
-					if (!Blocks.IsSolid(world.GetBlock(wx, wy + 1, wz))) faces++;
-					if (!Blocks.IsSolid(world.GetBlock(wx, wy - 1, wz))) faces++;
-					if (!Blocks.IsSolid(world.GetBlock(wx, wy, wz + 1))) faces++;
-					if (!Blocks.IsSolid(world.GetBlock(wx, wy, wz - 1))) faces++;
+					int ox = sx * VoxelWorld.SectionSize, oy = sy * VoxelWorld.SectionSize, oz = sz * VoxelWorld.SectionSize;
+					for (int y = 0; y < VoxelWorld.SectionSize; y++)
+					{
+						for (int z = 0; z < VoxelWorld.SectionSize; z++)
+						{
+							for (int x = 0; x < VoxelWorld.SectionSize; x++)
+							{
+								if (!Blocks.IsSolid((Block)blocks[ChunkBlocks.Index(ox + x, oy + y, oz + z)])) continue;
+								int wx = bx + ox + x, wy = by + oy + y, wz = bz + oz + z;
+								if (!Blocks.IsSolid(world.GetBlock(wx + 1, wy, wz))) faces++;
+								if (!Blocks.IsSolid(world.GetBlock(wx - 1, wy, wz))) faces++;
+								if (!Blocks.IsSolid(world.GetBlock(wx, wy + 1, wz))) faces++;
+								if (!Blocks.IsSolid(world.GetBlock(wx, wy - 1, wz))) faces++;
+								if (!Blocks.IsSolid(world.GetBlock(wx, wy, wz + 1))) faces++;
+								if (!Blocks.IsSolid(world.GetBlock(wx, wy, wz - 1))) faces++;
+							}
+						}
+					}
 				}
 			}
 		}
@@ -950,8 +1260,9 @@ public static class SelfTest
 		int stray = 0;
 		for (int i = 0; i < freshOrientation.Length; i++)
 			if (freshOrientation[i] != Orientation.None) stray++;
-		Check(freshOrientation.Length == ChunkMesher.Volume && stray == 0,
-			$"a fresh chunk is {ChunkMesher.Volume} x None ({stray} stray)");
+		int chunkVolume = VoxelWorld.ChunkSize * VoxelWorld.ChunkSize * VoxelWorld.ChunkSize;
+		Check(freshOrientation.Length == chunkVolume && stray == 0,
+			$"a fresh chunk is {chunkVolume} x None ({stray} stray)");
 		Check(world.GetOrientation(500, 3000, 500) == Orientation.None, "an unloaded chunk reads as None");
 		Check(world.GetOrientation(-5, -80, 9) == Orientation.None, "an unloaded buried chunk reads as None");
 
@@ -1417,7 +1728,7 @@ public static class SelfTest
 		};
 
 		stored[0] = Orientation.None;
-		var identity = ChunkMesher.Build(world, coord, blocks, out _).SurfaceGetArrays(0);
+		var identity = ChunkMesher.Build(world, coord, new Vector3I(0, 0, 0), blocks, out _).SurfaceGetArrays(0);
 		var identityUv = (Vector2[])identity[(int)Mesh.ArrayType.TexUV];
 		var identityNorm = (Vector3[])identity[(int)Mesh.ArrayType.Normal];
 
@@ -1468,7 +1779,7 @@ public static class SelfTest
 			if (i == Orientation.IdentityDuplicate) continue; // byte 9 is the identity again
 			byte o = (byte)i;
 			stored[0] = o;
-			var arrays = ChunkMesher.Build(world, coord, blocks, out _).SurfaceGetArrays(0);
+			var arrays = ChunkMesher.Build(world, coord, new Vector3I(0, 0, 0), blocks, out _).SurfaceGetArrays(0);
 			var norms = (Vector3[])arrays[(int)Mesh.ArrayType.Normal];
 			var uvs = (Vector2[])arrays[(int)Mesh.ArrayType.TexUV];
 			var uv2s = (Vector2[])arrays[(int)Mesh.ArrayType.TexUV2];
@@ -1775,7 +2086,7 @@ public static class SelfTest
 		var blocks = entity.GetComponent<ChunkBlocks>().Value;
 		Array.Clear(blocks);
 		blocks[ChunkBlocks.Index(8, 8, 8)] = (byte)Block.Grass;
-		var mesh = ChunkMesher.Build(world, entity.GetComponent<ChunkCoord>(), blocks, out _);
+		var mesh = ChunkMesher.Build(world, entity.GetComponent<ChunkCoord>(), new Vector3I(0, 0, 0), blocks, out _);
 		var arrays = mesh.SurfaceGetArrays(0);
 		var norms = (Vector3[])arrays[(int)Mesh.ArrayType.Normal];
 		var colors = (Color[])arrays[(int)Mesh.ArrayType.Color];
@@ -1868,13 +2179,15 @@ public static class SelfTest
 			&& stone4.Array.GetLayers() == 15 && stoneLayers.Length == 4 && stoneLayers[0] == 0 && stoneLayers[3] == 3,
 			$"allocation: stone×4 pack is {stone4.Layers} layers, {stone4.VariantKeys} key with variants, stone owns [{stoneList}]");
 
-		// E1/E6: a real all-stone chunk is deterministic and stays inside LayersFor.
+		// E1/E6: a real all-stone chunk is deterministic and stays inside LayersFor. The
+		// mesher's unit is a section, so build the outer one: its six faces are exposed.
 		var chunk = world.CreateChunk(new Vector3I(120, 70, 120));
 		var blocks = chunk.GetComponent<ChunkBlocks>().Value;
 		Array.Fill(blocks, (byte)Block.Stone);
 		var coord = chunk.GetComponent<ChunkCoord>();
-		var first = ChunkMesher.Build(world, coord, blocks, out _).SurfaceGetArrays(0);
-		var second = ChunkMesher.Build(world, coord, blocks, out _).SurfaceGetArrays(0);
+		var outer = new Vector3I(VoxelWorld.SectionsPerAxis - 1, VoxelWorld.SectionsPerAxis - 1, VoxelWorld.SectionsPerAxis - 1);
+		var first = ChunkMesher.Build(world, coord, outer, blocks, out _).SurfaceGetArrays(0);
+		var second = ChunkMesher.Build(world, coord, outer, blocks, out _).SurfaceGetArrays(0);
 		var norms = (Vector3[])first[(int)Mesh.ArrayType.Normal];
 		var uv2 = (Vector2[])first[(int)Mesh.ArrayType.TexUV2];
 		var uv2b = (Vector2[])second[(int)Mesh.ArrayType.TexUV2];
@@ -1882,16 +2195,20 @@ public static class SelfTest
 		for (int i = 0; i < uv2.Length; i++)
 			if (uv2[i].Y != 0f
 				|| Array.IndexOf(TexPack.LayersFor(Block.Stone, FaceOfNormal(norms[i])), (int)uv2[i].X) < 0) outside++;
-		Check(uv2.Length == 6144 && outside == 0 && SameValues(uv2, uv2b),
-			$"E1 16³ stone chunk: {uv2.Length} UV2 verts all inside LayersFor, rebuild byte-identical ({outside} outside)");
+		// The outer section's -X/-Y/-Z faces are against solid cells inside the same chunk and
+		// are culled; only the three faces toward the unloaded neighbour chunks are emitted:
+		// 3 * 16 * 16 * 4 = 3072. Stricter than the old whole-chunk count: it proves cross-
+		// section culling works inside a chunk.
+		Check(uv2.Length == 3072 && outside == 0 && SameValues(uv2, uv2b),
+			$"E1 16³ stone section: {uv2.Length} UV2 verts (3 intra-chunk faces culled), all inside LayersFor, rebuild byte-identical ({outside} outside)");
 
 		// E2: an edit outside the chunk forces the remesh path; the mesh must not move.
-		int bx = coord.X * 16, by = coord.Y * 16, bz = coord.Z * 16;
-		bool placed = world.SetBlock(bx + 18, by + 8, bz + 8, Block.Dirt);
-		var third = ChunkMesher.Build(world, coord, blocks, out _).SurfaceGetArrays(0);
+		int bx = coord.X * VoxelWorld.ChunkSize, by = coord.Y * VoxelWorld.ChunkSize, bz = coord.Z * VoxelWorld.ChunkSize;
+		bool placed = world.SetBlock(bx + VoxelWorld.ChunkSize + 2, by + 8, bz + 8, Block.Dirt);
+		var third = ChunkMesher.Build(world, coord, outer, blocks, out _).SurfaceGetArrays(0);
 		Check(placed && SameValues(uv2, (Vector2[])third[(int)Mesh.ArrayType.TexUV2]),
-			"E2 remesh after an edit two cells outside the chunk keeps UV2 identical");
-		world.SetBlock(bx + 18, by + 8, bz + 8, Block.Air);
+			"E2 remesh after an edit outside the chunk keeps UV2 identical");
+		world.SetBlock(bx + VoxelWorld.ChunkSize + 2, by + 8, bz + 8, Block.Air);
 
 		// E3: same local cell, different chunks — a chunk-local hash fails all six faces.
 		Check(CrossContextFaces(world, new Vector3I(130, 70, 130)) == 0
@@ -2034,10 +2351,10 @@ public static class SelfTest
 		var blocks = chunk.GetComponent<ChunkBlocks>().Value;
 		Array.Clear(blocks);
 		blocks[ChunkBlocks.Index(3, 4, 5)] = (byte)Block.Stone;
-		var arrays = ChunkMesher.Build(world, chunk.GetComponent<ChunkCoord>(), blocks, out _).SurfaceGetArrays(0);
+		var arrays = ChunkMesher.Build(world, chunk.GetComponent<ChunkCoord>(), new Vector3I(0, 0, 0), blocks, out _).SurfaceGetArrays(0);
 		var norms = (Vector3[])arrays[(int)Mesh.ArrayType.Normal];
 		var uv2 = (Vector2[])arrays[(int)Mesh.ArrayType.TexUV2];
-		int wx = 160 * 16 + 3, wy = 70 * 16 + 4, wz = 160 * 16 + 5;
+		int wx = 160 * VoxelWorld.ChunkSize + 3, wy = 70 * VoxelWorld.ChunkSize + 4, wz = 160 * VoxelWorld.ChunkSize + 5;
 		int meshWrong = 0;
 		for (int i = 0; i < norms.Length; i++)
 		{
@@ -2152,10 +2469,10 @@ public static class SelfTest
 		var blocks = entity.GetComponent<ChunkBlocks>().Value;
 		Array.Clear(blocks);
 		blocks[ChunkBlocks.Index(3, 4, 5)] = (byte)Block.Stone;
-		var arrays = ChunkMesher.Build(world, entity.GetComponent<ChunkCoord>(), blocks, out _).SurfaceGetArrays(0);
+		var arrays = ChunkMesher.Build(world, entity.GetComponent<ChunkCoord>(), new Vector3I(0, 0, 0), blocks, out _).SurfaceGetArrays(0);
 		var norms = (Vector3[])arrays[(int)Mesh.ArrayType.Normal];
 		var uv2 = (Vector2[])arrays[(int)Mesh.ArrayType.TexUV2];
-		int wx = chunkKey.X * 16 + 3, wy = chunkKey.Y * 16 + 4, wz = chunkKey.Z * 16 + 5;
+		int wx = chunkKey.X * VoxelWorld.ChunkSize + 3, wy = chunkKey.Y * VoxelWorld.ChunkSize + 4, wz = chunkKey.Z * VoxelWorld.ChunkSize + 5;
 		int wrong = 0;
 		for (int i = 0; i < norms.Length; i++)
 		{
@@ -2329,6 +2646,326 @@ public static class SelfTest
 		return true;
 	}
 
+	/// <summary>The collision gate follows the player's section. A chunk entity carries one
+	/// NeedsCollision tag while collision is decided per section, so moving to a section that was
+	/// out of range must re-enter the work list; if the tag is dropped early, the new gate
+	/// sections keep no collision and the player walks through the ground. Mechanical, no
+	/// physics: drive _Process and inspect the section arrays.</summary>
+	private static void CheckCollisionGate(VoxelWorld host)
+	{
+		GD.Print("  ---- collision gate ----");
+		var gateWorld = new VoxelWorld { Terrain = new TerrainGenerator(seed: 4242), ViewDistance = 0 };
+		host.AddChild(gateWorld); // collision bodies only register inside the tree
+
+		// Far from the origin on purpose: chunk-local section 0..3 must never be confused with
+		// the world section coordinate, or the gate comparison silently matches nothing.
+		const int farX = 300, farZ = 300;
+		int cx = VoxelWorld.FloorDiv(farX, VoxelWorld.ChunkSize), cz = VoxelWorld.FloorDiv(farZ, VoxelWorld.ChunkSize);
+		var range = gateWorld.Terrain.SurfaceRange(cx, cz);
+		int groundY = VoxelWorld.FloorDiv(range.Max, VoxelWorld.ChunkSize);
+		var focus = new Vector3(cx * VoxelWorld.ChunkSize + 0.5f, groundY * VoxelWorld.ChunkSize + 0.5f, cz * VoxelWorld.ChunkSize + 0.5f);
+		gateWorld.Focus = focus;
+		gateWorld.EnsureAreaAround(focus, 0);
+
+		bool loaded = gateWorld.TryGetChunk(farX, range.Max, farZ, out var entity);
+		Check(loaded, $"the far gate chunk ({cx},{groundY},{cz}) is loaded");
+		if (!loaded) { gateWorld.Free(); return; }
+
+		// Phase 1: the player stands in the chunk's first section; the far sections (3,3,3)
+		// are outside the gate and stay undecided, so the chunk must keep NeedsCollision.
+		RunFrames(gateWorld, 100);
+		var playerA = new Vector3I(cx * VoxelWorld.SectionsPerAxis, groundY * VoxelWorld.SectionsPerAxis, cz * VoxelWorld.SectionsPerAxis);
+		var (gapsA, solidA) = GateState(gateWorld, entity, playerA);
+		Check(gapsA == 0, $"far gate: every gate section with blocks has collision ({gapsA} gaps)");
+		Check(solidA > 0, $"the far gate really contains terrain ({solidA} sections with blocks)");
+
+		ulong before = entity.GetComponent<ChunkVisual>().CollisionDone;
+		// Phase 2: move to the far corner section of the SAME chunk. Those sections were never
+		// decided; a missing re-tag leaves them without collision.
+		gateWorld.Focus = new Vector3(cx * VoxelWorld.ChunkSize + 3 * VoxelWorld.SectionSize + 8.5f,
+			groundY * VoxelWorld.ChunkSize + 3 * VoxelWorld.SectionSize + 8.5f,
+			cz * VoxelWorld.ChunkSize + 3 * VoxelWorld.SectionSize + 8.5f);
+		RunFrames(gateWorld, 100);
+		ulong after = entity.GetComponent<ChunkVisual>().CollisionDone;
+		var playerB = new Vector3I(cx * VoxelWorld.SectionsPerAxis + 3, groundY * VoxelWorld.SectionsPerAxis + 3, cz * VoxelWorld.SectionsPerAxis + 3);
+		var (gapsB, _) = GateState(gateWorld, entity, playerB);
+		Check((after & ~before) != 0, $"the moved gate decided new sections (0x{after & ~before:X} new)");
+		Check(gapsB == 0, $"moved gate: every gate section with blocks has collision ({gapsB} gaps)");
+
+		// Behavior level: drop a real player on that far surface. With the gate working it
+		// lands and stays; with no collision it sinks and Move's teleport fallback throws it
+		// upward, which is what the counter detects.
+		int surface = gateWorld.SurfaceY(farX, farZ);
+		var node = new CharacterBody3D { Name = "GateProbe", Position = new Vector3(farX + 2.5f, surface + 8f, farZ + 2.5f) };
+		node.AddChild(new CollisionShape3D { Name = "Body", Shape = new CapsuleShape3D { Radius = 2.0f, Height = 8.0f }, Position = new Vector3(0, 4.0f, 0) });
+		gateWorld.AddChild(node);
+		var probe = gateWorld.Store.CreateEntity(new PlayerBody { Node = node }, new PlayerState(), default(PlayerIntent));
+		int teleports = 0;
+		float startY = node.Position.Y;
+		float previousY = startY;
+		for (int i = 0; i < 120; i++)
+		{
+			gateWorld._Process(1.0 / 60.0);
+			PlayerSystems.Move(gateWorld.Store, gateWorld, 1f / 60f);
+			float y = node.Position.Y;
+			if (y > previousY + 1f) teleports++;
+			previousY = y;
+		}
+		// MoveAndSlide is a no-op when the physics space has never been stepped (this runs in
+		// _Ready), so the drop assertion is only meaningful once the body demonstrably fell.
+		bool moved = node.Position.Y < startY - 1f;
+		GD.Print($"  info  far drop: moved={moved} teleports={teleports} y={node.Position.Y:F1}");
+		Check(!moved || teleports == 0, $"a player dropped on the far surface is not teleported out of the ground ({teleports} teleports)");
+		Check(!moved || node.Position.Y > gateWorld.BedrockY, $"the player did not fall out of the world (y={node.Position.Y:F1})");
+		probe.DeleteEntity();
+		node.Free();
+		gateWorld.Free();
+	}
+
+	/// <summary>Two invariants that silently regress: (1) the block the player stands on must be
+	/// minable — breakable in the data AND present as a collision face at that same coordinate —
+	/// and (2) every collision body must sit exactly at its section origin with section-local
+	/// geometry. The 4x4x8 capsule's footprint crosses chunk borders, so the landing spot below
+	/// is chosen on a chunk boundary on purpose: the supporting block can come from the
+	/// neighbouring chunk and the check must still find it. The support section may be meshless
+	/// (a fully solid buried one gets a box fallback); the assertion is about coordinates, not
+	/// about which shape kind was chosen.</summary>
+	private static void CheckSupportCollision(VoxelWorld host)
+	{
+		GD.Print("  ---- support collision ----");
+		var world = new VoxelWorld { Terrain = new TerrainGenerator(seed: 4242), ViewDistance = 1 };
+		host.AddChild(world); // collision bodies only register inside the tree
+
+		// Footprint x - 2.5 .. x + 1.5 with x = -0.5 spans the x = 0 chunk border (chunks -1 and 0).
+		const int feetX = -1, feetZ = 40;
+		int surface = world.SurfaceY(feetX, feetZ);
+		var focus = new Vector3(feetX + 0.5f, surface, feetZ + 0.5f);
+		world.Focus = focus;
+		world.EnsureAreaAround(focus, 1);
+		RunFrames(world, 200);
+
+		Check(VoxelWorld.FloorDiv(feetX - 2, VoxelWorld.ChunkSize) != VoxelWorld.FloorDiv(feetX + 1, VoxelWorld.ChunkSize),
+			"the landing footprint spans two chunks");
+
+		// Support = the topmost solid block anywhere in the footprint, exactly how the capsule
+		// finds its perch; the centre column itself may be a void (cliff edge).
+		int supportX = feetX, supportY = int.MinValue, supportZ = feetZ;
+		for (int dz = -2; dz <= 2; dz++)
+		{
+			for (int dx = -2; dx <= 2; dx++)
+			{
+				for (int y = surface + 40; y > surface - 60; y--)
+				{
+					if (!Blocks.IsSolid(world.GetBlock(feetX + dx, y, feetZ + dz))) continue;
+					if (y > supportY) { supportY = y; supportX = feetX + dx; supportZ = feetZ + dz; }
+					break;
+				}
+			}
+		}
+		Check(supportY != int.MinValue, "the cross-chunk landing spot has a support block");
+		if (supportY == int.MinValue) { world.Free(); return; }
+
+		var supportBlock = world.GetBlock(supportX, supportY, supportZ);
+		GD.Print($"  info  support=({supportX},{supportY},{supportZ}) block={supportBlock} "
+			+ $"chunk={VoxelWorld.ChunkKeyOf(supportX, supportY, supportZ)} centre={VoxelWorld.ChunkKeyOf(feetX, supportY, feetZ)}");
+		Check(Blocks.IsBreakable(supportBlock), $"the block under the feet is breakable ({supportBlock})");
+		Check(SupportTopFacePresent(world, supportX, supportY, supportZ),
+			"the support block's top face exists in the collision geometry at that coordinate");
+
+		int mismatches = CollisionPlacementMismatches(world);
+		Check(mismatches == 0, $"every collision body sits at its section origin with section-local geometry ({mismatches} mismatches)");
+		int gaps = CollisionShapeGaps(world);
+		Check(gaps == 0, $"every decided section with blocks carries a shape ({gaps} gaps)");
+
+		// Mutation proof, self-contained: the same checkers must notice a body moved by one chunk
+		// and a shape that disappears, or the assertions above prove nothing. Both are restored
+		// immediately, so the world stays valid for the rest of the run.
+		if (TryFirstBody(world, out var body))
+		{
+			var saved = body.Position;
+			body.Position = saved + new Vector3(VoxelWorld.ChunkSize, 0, 0);
+			int moved = CollisionPlacementMismatches(world);
+			Check(moved > 0, $"mutation: a body offset by one chunk is detected ({moved} mismatches)");
+			body.Position = saved;
+			Check(CollisionPlacementMismatches(world) == 0, "restoring the body clears the mismatch");
+		}
+		if (TryFirstShape(world, out var shape))
+		{
+			var saved = shape.Shape;
+			shape.Shape = null;
+			int missing = CollisionShapeGaps(world);
+			Check(missing > 0, $"mutation: a removed section shape is detected ({missing} gaps)");
+			shape.Shape = saved;
+		}
+
+		world.Free();
+	}
+
+	/// <summary>True when the collision geometry has the four corners of the block's top face at
+	/// the block's own world coordinate: a trimesh face for a meshed section, or the box top for
+	/// a fully solid meshless one. All four corners must be present, so a body placed a chunk
+	/// away cannot pass.</summary>
+	private static bool SupportTopFacePresent(VoxelWorld world, int x, int y, int z)
+	{
+		if (!world.TryGetChunk(x, y, z, out var chunk)) return false;
+		var coord = chunk.GetComponent<ChunkCoord>();
+		var visual = chunk.GetComponent<ChunkVisual>();
+		var local = new Vector3I(VoxelWorld.FloorDiv(x - coord.X * VoxelWorld.ChunkSize, VoxelWorld.SectionSize),
+			VoxelWorld.FloorDiv(y - coord.Y * VoxelWorld.ChunkSize, VoxelWorld.SectionSize),
+			VoxelWorld.FloorDiv(z - coord.Z * VoxelWorld.ChunkSize, VoxelWorld.SectionSize));
+		int si = (local.Y * VoxelWorld.SectionsPerAxis + local.Z) * VoxelWorld.SectionsPerAxis + local.X;
+		var shape = visual.Shapes?[si]?.Shape;
+		if (shape == null) return false;
+
+		var origin = new Vector3(
+			coord.X * VoxelWorld.ChunkSize + local.X * VoxelWorld.SectionSize,
+			coord.Y * VoxelWorld.ChunkSize + local.Y * VoxelWorld.SectionSize,
+			coord.Z * VoxelWorld.ChunkSize + local.Z * VoxelWorld.SectionSize);
+		if (shape is BoxShape3D box)
+			return Mathf.IsEqualApprox(origin.Y + box.Size.Y, y + 1f);
+		if (shape is not ConcavePolygonShape3D tri) return false;
+
+		float top = y + 1f - origin.Y;
+		float x0 = x - origin.X, x1 = x0 + 1f, z0 = z - origin.Z, z1 = z0 + 1f;
+		bool c00 = false, c10 = false, c01 = false, c11 = false;
+		foreach (var v in tri.GetFaces())
+		{
+			if (!Mathf.IsEqualApprox(v.Y, top)) continue;
+			if (v.X < x0 - 0.01f || v.X > x1 + 0.01f || v.Z < z0 - 0.01f || v.Z > z1 + 0.01f) continue;
+			if (v.X < x0 + 0.5f) { if (v.Z < z0 + 0.5f) c00 = true; else c01 = true; }
+			else { if (v.Z < z0 + 0.5f) c10 = true; else c11 = true; }
+		}
+		return c00 && c10 && c01 && c11;
+	}
+
+	/// <summary>Counts collision bodies whose world position is not their section origin, or
+	/// whose geometry is not section-local (trimesh vertices outside [0, SectionSize], wrong box
+	/// size, unknown shape kind). Zero is the only valid answer.</summary>
+	private static int CollisionPlacementMismatches(VoxelWorld world)
+	{
+		int mismatches = 0;
+		world.Store.Query<ChunkCoord, ChunkVisual>().ForEachEntity(
+			(ref ChunkCoord coord, ref ChunkVisual visual, Entity _) =>
+		{
+			if (visual.Bodies == null || visual.Shapes == null) return;
+			for (int si = 0; si < ChunkVisual.SectionCount; si++)
+			{
+				var body = visual.Bodies[si];
+				var shape = visual.Shapes[si];
+				if (body == null && shape == null) continue;
+				if (body == null || shape == null || shape.Shape == null) { mismatches++; continue; }
+				var local = ChunkVisual.SectionOf(si);
+				var expected = new Vector3(
+					coord.X * VoxelWorld.ChunkSize + local.X * VoxelWorld.SectionSize,
+					coord.Y * VoxelWorld.ChunkSize + local.Y * VoxelWorld.SectionSize,
+					coord.Z * VoxelWorld.ChunkSize + local.Z * VoxelWorld.SectionSize);
+				if (!body.Position.IsEqualApprox(expected)) { mismatches++; continue; }
+				if (shape.Shape is ConcavePolygonShape3D tri)
+				{
+					foreach (var v in tri.GetFaces())
+					{
+						if (v.X < -0.01f || v.X > VoxelWorld.SectionSize + 0.01f
+							|| v.Y < -0.01f || v.Y > VoxelWorld.SectionSize + 0.01f
+							|| v.Z < -0.01f || v.Z > VoxelWorld.SectionSize + 0.01f)
+						{ mismatches++; break; }
+					}
+				}
+				else if (shape.Shape is BoxShape3D box)
+				{
+					if (!box.Size.IsEqualApprox(Vector3.One * VoxelWorld.SectionSize)) mismatches++;
+				}
+				else mismatches++;
+			}
+		});
+		return mismatches;
+	}
+
+	/// <summary>Counts sections the collision pass has decided, that contain blocks, but that
+	/// carry no shape: the geometry/data mismatch class the dig-down bug looked like.</summary>
+	private static int CollisionShapeGaps(VoxelWorld world)
+	{
+		int gaps = 0;
+		world.Store.Query<ChunkCoord, ChunkBlocks, ChunkVisual>().ForEachEntity(
+			(ref ChunkCoord coord, ref ChunkBlocks blocks, ref ChunkVisual visual, Entity _) =>
+		{
+			if (visual.Shapes == null) return;
+			for (int si = 0; si < ChunkVisual.SectionCount; si++)
+			{
+				if ((visual.CollisionDone & (1UL << si)) == 0) continue;
+				if (!SectionHasBlocks(blocks.Value, ChunkVisual.SectionOf(si))) continue;
+				if (visual.Shapes[si]?.Shape == null) gaps++;
+			}
+		});
+		return gaps;
+	}
+
+	private static bool TryFirstBody(VoxelWorld world, out StaticBody3D body)
+	{
+		StaticBody3D found = null;
+		world.Store.Query<ChunkCoord, ChunkVisual>().ForEachEntity(
+			(ref ChunkCoord coord, ref ChunkVisual visual, Entity _) =>
+		{
+			if (found != null || visual.Bodies == null) return;
+			foreach (var b in visual.Bodies) if (b != null) { found = b; return; }
+		});
+		body = found;
+		return found != null;
+	}
+
+	private static bool TryFirstShape(VoxelWorld world, out CollisionShape3D shape)
+	{
+		CollisionShape3D found = null;
+		world.Store.Query<ChunkCoord, ChunkVisual>().ForEachEntity(
+			(ref ChunkCoord coord, ref ChunkVisual visual, Entity _) =>
+		{
+			if (found != null || visual.Shapes == null) return;
+			foreach (var s in visual.Shapes) if (s?.Shape != null) { found = s; return; }
+		});
+		shape = found;
+		return found != null;
+	}
+
+	/// <summary>Mechanical collision-gate invariant for one chunk: every section whose centre is
+	/// inside the gate must be decided, and must carry a shape unless it is all air. Section
+	/// positions are converted to world section coordinates before comparing with the player.</summary>
+	private static (int Gaps, int Solid) GateState(VoxelWorld world, Entity chunk, Vector3I playerSection)
+	{
+		var coord = chunk.GetComponent<ChunkCoord>();
+		var visual = chunk.GetComponent<ChunkVisual>();
+		var blocks = chunk.GetComponent<ChunkBlocks>().Value;
+		int gaps = 0, solid = 0;
+		for (int si = 0; si < ChunkVisual.SectionCount; si++)
+		{
+			var local = ChunkVisual.SectionOf(si);
+			var section = new Vector3I(coord.X * VoxelWorld.SectionsPerAxis + local.X,
+				coord.Y * VoxelWorld.SectionsPerAxis + local.Y,
+				coord.Z * VoxelWorld.SectionsPerAxis + local.Z);
+			if (Mathf.Abs(section.X - playerSection.X) > world.CollisionRadius) continue;
+			if (Mathf.Abs(section.Y - playerSection.Y) > world.CollisionRadius) continue;
+			if (Mathf.Abs(section.Z - playerSection.Z) > world.CollisionRadius) continue;
+			bool hasBlocks = SectionHasBlocks(blocks, local);
+			if (hasBlocks) solid++;
+			if ((visual.CollisionDone & (1UL << si)) == 0) { gaps++; continue; }
+			if (hasBlocks && (visual.Shapes == null || visual.Shapes[si] == null)) gaps++;
+		}
+		return (gaps, solid);
+	}
+
+	private static bool SectionHasBlocks(byte[] blocks, Vector3I section)
+	{
+		int x0 = section.X * VoxelWorld.SectionSize, y0 = section.Y * VoxelWorld.SectionSize, z0 = section.Z * VoxelWorld.SectionSize;
+		for (int y = y0; y < y0 + VoxelWorld.SectionSize; y++)
+			for (int z = z0; z < z0 + VoxelWorld.SectionSize; z++)
+				for (int x = x0; x < x0 + VoxelWorld.SectionSize; x++)
+					if (blocks[ChunkBlocks.Index(x, y, z)] != (byte)Block.Air) return true;
+		return false;
+	}
+
+	private static void RunFrames(VoxelWorld world, int frames)
+	{
+		for (int i = 0; i < frames; i++) world._Process(1.0 / 60.0);
+	}
+
 	private static void Check(bool condition, string what)
 	{
 		GD.Print(condition ? $"  ok    {what}" : $"  FAIL  {what}");
@@ -2345,7 +2982,7 @@ public static class SelfTest
 		const int bx = 40000, by = 3000, bz = 40000;
 		var cell = new Vector3I(bx, by, bz);
 		var chunkA = VoxelWorld.ChunkKeyOf(bx, by, bz);
-		var chunkB = VoxelWorld.ChunkKeyOf(bx + 16, by, bz);
+		var chunkB = VoxelWorld.ChunkKeyOf(bx + VoxelWorld.ChunkSize, by, bz);
 
 		static int VisitCount(BlockEntityRegistry r)
 		{
@@ -2403,11 +3040,11 @@ public static class SelfTest
 		{
 			rng = rng * 1664525u + 1013904223u;
 			int chunkOffset = (int)(rng & 1u);
-			int lx = (int)((rng >> 8) & 15u);
-			int lz = (int)((rng >> 20) & 15u);
+			int lx = (int)((rng >> 8) & (uint)(VoxelWorld.ChunkSize - 1));
+			int lz = (int)((rng >> 20) & (uint)(VoxelWorld.ChunkSize - 1));
 			int pick = (int)((rng >> 16) % 3u);
 			var block = pick == 0 ? Block.Chest : pick == 1 ? Block.Stone : Block.Air;
-			var random = new Vector3I(bx + chunkOffset * 16 + lx, by, bz + lz);
+			var random = new Vector3I(bx + chunkOffset * VoxelWorld.ChunkSize + lx, by, bz + lz);
 			world.SetBlock(random.X, random.Y, random.Z, block);
 		}
 		var touched = new List<Vector3I> { chunkA, chunkB };
@@ -2415,21 +3052,23 @@ public static class SelfTest
 		Check(bytesWithoutEntity == 0 && entitiesWithoutByte == 0,
 			$"audit agrees after 200 random edits (bytesWithoutEntity={bytesWithoutEntity}, entitiesWithoutByte={entitiesWithoutByte})");
 
-		// A second, non-Audit opinion: count the interactive bytes by hand.
+		// A second, non-Audit opinion: count the interactive bytes by hand over the whole
+		// chunk A footprint the random edits cover.
 		int byHand = 0;
-		for (int x = bx; x < bx + 32; x++)
+		for (int x = bx; x < bx + VoxelWorld.ChunkSize; x++)
 			for (int y = by; y < by + 16; y++)
-				for (int z = bz; z < bz + 16; z++)
+				for (int z = bz; z < bz + VoxelWorld.ChunkSize; z++)
 					if (BlockInteractions.IsInteractable(world.GetBlock(x, y, z))) byHand++;
 		int visitedRegion = 0;
 		registry.Visit((c, _) =>
 		{
-			if (c.X >= bx && c.X < bx + 32 && c.Y >= by && c.Y < by + 16 && c.Z >= bz && c.Z < bz + 16) visitedRegion++;
+			if (c.X >= bx && c.X < bx + VoxelWorld.ChunkSize && c.Y >= by && c.Y < by + 16
+				&& c.Z >= bz && c.Z < bz + VoxelWorld.ChunkSize) visitedRegion++;
 		});
 		Check(byHand == visitedRegion, $"hand count of interactive cells matches the registry ({byHand} vs {visitedRegion})");
 
 		// 6. the audit can fail -------------------------------------------------
-		var rawCell = new Vector3I(bx + 64, by, bz);
+		var rawCell = new Vector3I(bx + VoxelWorld.ChunkSize, by, bz);
 		world.SetBlock(rawCell.X, rawCell.Y, rawCell.Z, Block.Stone);
 		bool haveRawChunk = world.TryGetChunk(rawCell.X, rawCell.Y, rawCell.Z, out var rawChunk);
 		Check(haveRawChunk, "the raw-audit chunk is loaded");
@@ -2453,7 +3092,7 @@ public static class SelfTest
 		var bigBase = new Vector3I(bx + 32, by, bz);
 		for (int i = 0; i < 512; i++)
 			world.SetBlock(bigBase.X + (i & 15), bigBase.Y + (i >> 8), bigBase.Z + ((i >> 4) & 15), Block.Chest);
-		var loneCell = new Vector3I(bx + 48, by, bz);
+		var loneCell = new Vector3I(bx + 3 * VoxelWorld.ChunkSize, by, bz);
 		world.SetBlock(loneCell.X, loneCell.Y, loneCell.Z, Block.Chest);
 
 		int probes = registry.Probes;
@@ -2506,8 +3145,8 @@ public static class SelfTest
 			"the neighbouring placement cell is still Air with no entity");
 
 		// 10. DropChunk (chunk unload) ------------------------------------------
-		var dropA = new Vector3I(bx + 65, by, bz);
-		var dropB = new Vector3I(bx + 66, by, bz);
+		var dropA = new Vector3I(bx + 4 * VoxelWorld.ChunkSize, by, bz);
+		var dropB = new Vector3I(bx + 4 * VoxelWorld.ChunkSize + 1, by, bz);
 		world.SetBlock(dropA.X, dropA.Y, dropA.Z, Block.Chest);
 		world.SetBlock(dropB.X, dropB.Y, dropB.Z, Block.Chest);
 		Check(registry.Contains(dropA) && registry.Contains(dropB), "two chests in one chunk have entities");
@@ -2669,7 +3308,7 @@ public static class SelfTest
 			"C2 the pipeline created a Chest block entity with BlockPos + Toggle");
 
 		// C3: breaking the chest removes the entity and the emptied bucket.
-		var brokenChest = new Vector3I(bx + 96, by, bz);
+		var brokenChest = new Vector3I(bx + 5 * VoxelWorld.ChunkSize, by, bz);
 		world.SetBlock(brokenChest.X, brokenChest.Y, brokenChest.Z, Block.Chest);
 		Check(registry.Contains(brokenChest), "C3 a chest in a fresh chunk has an entity");
 		int bucketsBeforeChestBreak = registry.ChunkBucketCount;

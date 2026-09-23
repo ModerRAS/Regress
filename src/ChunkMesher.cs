@@ -3,12 +3,12 @@ using Godot;
 
 namespace Regress;
 
-/// <summary>Turns one 16-cube of voxels into an ArrayMesh: a quad per solid face touching air.</summary>
+/// <summary>Turns one <see cref="SectionSize"/>-cube of voxels into an ArrayMesh: a quad per solid face touching air.</summary>
 public static class ChunkMesher
 {
-	public const int Size = 16;
-	public const int Volume = Size * Size * Size;
-	private const int Pad = Size + 2;
+	public const int SectionSize = VoxelWorld.SectionSize;
+	public const int Volume = SectionSize * SectionSize * SectionSize;
+	private const int Pad = SectionSize + 2;
 
 	private static readonly Vector3I[] Dirs =
 	{
@@ -56,42 +56,52 @@ public static class ChunkMesher
 	[System.ThreadStatic] private static byte[] _orientations;
 
 	/// <summary>The chunk's own orientation array, resolved from the entity once when the caller
-	/// does not pass it (the three-argument call VoxelWorld still makes).</summary>
+	/// does not pass it.</summary>
 	private static byte[] OrientationsOf(VoxelWorld world, int bx, int by, int bz, byte[] orientations)
 		=> orientations ?? (world.TryGetChunk(bx, by, bz, out var entity)
 			? entity.GetComponent<ChunkBlocks>().Orientation : null);
 
-	public static ArrayMesh Build(VoxelWorld world, ChunkCoord coord, byte[] blocks, out int indexCount,
+	public static ArrayMesh Build(VoxelWorld world, ChunkCoord chunk, Vector3I section, byte[] blocks, out int indexCount,
 		byte[] orientations = null)
 	{
 		indexCount = 0;
-		int bx = coord.X * Size;
-		int by = coord.Y * Size;
-		int bz = coord.Z * Size;
+		int ox = section.X * SectionSize;
+		int oy = section.Y * SectionSize;
+		int oz = section.Z * SectionSize;
+		int bx = chunk.X * VoxelWorld.ChunkSize; // the chunk's world origin
+		int by = chunk.Y * VoxelWorld.ChunkSize;
+		int bz = chunk.Z * VoxelWorld.ChunkSize;
+		int wx = bx + ox, wy = by + oy, wz = bz + oz; // the section's world origin (tile/variant hash)
 
 		orientations = OrientationsOf(world, bx, by, bz, orientations);
 
 		// One padded copy so neighbour lookups never touch the world dictionary.
 		var cells = _cells ??= new byte[Pad * Pad * Pad];
 		var orient = _orientations ??= new byte[Pad * Pad * Pad];
-		for (int y = -1; y <= Size; y++)
+		for (int y = -1; y <= SectionSize; y++)
 		{
-			for (int z = -1; z <= Size; z++)
+			for (int z = -1; z <= SectionSize; z++)
 			{
-				for (int x = -1; x <= Size; x++)
+				for (int x = -1; x <= SectionSize; x++)
 				{
-					bool inside = x >= 0 && x < Size && y >= 0 && y < Size && z >= 0 && z < Size;
-					cells[PadIndex(x, y, z)] = inside
-						? blocks[ChunkBlocks.Index(x, y, z)]
-						: (byte)world.GetBlock(bx + x, by + y, bz + z);
-					// Only the inside cells are ever read: the face loop below runs over 0..15, and a
-					// neighbour's rotation never changes THIS chunk's own faces — the neighbour's mesh
-					// is built by the neighbouring chunk. Filling the border would cost 1736 world
-					// lookups per chunk for nothing. ponytail: resolve the <=8 neighbour entities once
-					// if a later pass ever needs neighbour rotations.
+					bool inside = x >= 0 && x < SectionSize && y >= 0 && y < SectionSize && z >= 0 && z < SectionSize;
+					// Cells inside this chunk are read straight from its own arrays; only cells
+					// outside the chunk go through the world (terrain approximation or a neighbour).
+					int cx = ox + x, cy = oy + y, cz = oz + z;
+					bool inChunk = cx >= 0 && cx < VoxelWorld.ChunkSize
+						&& cy >= 0 && cy < VoxelWorld.ChunkSize
+						&& cz >= 0 && cz < VoxelWorld.ChunkSize;
+					cells[PadIndex(x, y, z)] = inChunk
+						? blocks[ChunkBlocks.Index(cx, cy, cz)]
+						: (byte)world.GetBlock(bx + cx, by + cy, bz + cz);
+					// Only the section's own cells are ever read: the face loop below runs over 0..15,
+					// and a neighbour's rotation never changes THIS section's own faces — the
+					// neighbour's mesh is built by its own section. Filling the border would cost up
+					// to 1736 world lookups per section for nothing. ponytail: resolve the <=8
+					// neighbour chunks once if a later pass ever needs neighbour rotations.
 					if (inside)
 						orient[PadIndex(x, y, z)] = orientations == null
-							? Orientation.None : orientations[ChunkBlocks.Index(x, y, z)];
+							? Orientation.None : orientations[ChunkBlocks.Index(cx, cy, cz)];
 				}
 			}
 		}
@@ -103,11 +113,11 @@ public static class ChunkMesher
 		var uv2s = new List<Vector2>();
 		var idx = new List<int>();
 
-		for (int y = 0; y < Size; y++)
+		for (int y = 0; y < SectionSize; y++)
 		{
-			for (int z = 0; z < Size; z++)
+			for (int z = 0; z < SectionSize; z++)
 			{
-				for (int x = 0; x < Size; x++)
+				for (int x = 0; x < SectionSize; x++)
 				{
 					var b = (Block)cells[PadIndex(x, y, z)];
 					if (!Blocks.IsSolid(b)) continue;
@@ -117,7 +127,7 @@ public static class ChunkMesher
 					{
 						var d = Dirs[f];
 						if (Blocks.IsSolid((Block)cells[PadIndex(x + d.X, y + d.Y, z + d.Z)])) continue;
-						EmitFace(verts, norms, cols, uvs, uv2s, idx, b, o, f, x, y, z, bx, by, bz);
+						EmitFace(verts, norms, cols, uvs, uv2s, idx, b, o, f, x, y, z, wx, wy, wz);
 					}
 				}
 			}
@@ -130,7 +140,7 @@ public static class ChunkMesher
 
 	/// <summary>
 	/// The six faces of one block alone at the origin, in cell-local space, with no neighbour
-	/// occlusion test. Same emitter as <see cref="Build"/>, so for a chunk whose only solid block
+	/// occlusion test. Same emitter as <see cref="Build"/>, so for a section whose only solid block
 	/// is at (0, 0, 0) with air around it the two meshes are equal per element.
 	/// </summary>
 	public static ArrayMesh BuildBlock(Block block, byte orientation)
@@ -146,13 +156,13 @@ public static class ChunkMesher
 		return Emit(verts, norms, cols, uvs, uv2s, idx);
 	}
 
-	/// <summary>One face quad of one block at cell (x, y, z) plus the chunk's world origin
-	/// (bx, by, bz), rotation applied. Both the chunk path and <see cref="BuildBlock"/> go through
+	/// <summary>One face quad of one block at cell (x, y, z) plus the section's world origin
+	/// (wx, wy, wz), rotation applied. Both the chunk path and <see cref="BuildBlock"/> go through
 	/// here, so a preview cannot drift from the world. The variant hash uses the block's absolute
 	/// world position and the LOCAL face (design §3).</summary>
 	private static void EmitFace(List<Vector3> verts, List<Vector3> norms, List<Color> cols,
 		List<Vector2> uvs, List<Vector2> uv2s, List<int> idx, Block block, byte orientation, int face,
-		int x, int y, int z, int bx, int by, int bz)
+		int x, int y, int z, int wx, int wy, int wz)
 	{
 		int start = verts.Count;
 		var corner = FaceCorners[face];
@@ -165,7 +175,7 @@ public static class ChunkMesher
 		// The tile is the one for the LOCAL face the rotation puts here, not the world face; the
 		// variant is chosen from the block's absolute world position and the size class travels
 		// with the layer, so UV2 = (layer, class) (design §3, P2.2).
-		var tile = TexPack.TileAt(block, Orientation.LocalFace(orientation, face), bx + x, by + y, bz + z);
+		var tile = TexPack.TileAt(block, Orientation.LocalFace(orientation, face), wx + x, wy + y, wz + z);
 		for (int i = 0; i < 4; i++)
 		{
 			int cx = corner[i * 3], cy = corner[i * 3 + 1], cz = corner[i * 3 + 2];

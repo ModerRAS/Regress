@@ -4,7 +4,7 @@ using Godot;
 namespace Regress;
 
 /// <summary>
-/// A chunk is a 16 x 16 x 16 cube of blocks at a 3D chunk coordinate.
+/// A chunk is a <see cref="VoxelWorld.ChunkSize"/>-cube of blocks at a 3D chunk coordinate.
 /// Chunks are entities; the world has no vertical limit, so chunk Y is unbounded.
 /// </summary>
 public struct ChunkCoord : IComponent
@@ -23,22 +23,50 @@ public struct ChunkCoord : IComponent
 	public override string ToString() => $"({X},{Y},{Z})";
 }
 
-/// <summary>Voxel payload of a chunk: two 4096-byte arrays, index = (y * 16 + z) * 16 + x.
+/// <summary>Voxel payload of a chunk: two ChunkSize^3-byte arrays, index = (y * ChunkSize + z) * ChunkSize + x.
 /// Every block carries an orientation; byte 0 (<see cref="Orientation.None"/>) is no rotation.</summary>
 public struct ChunkBlocks : IComponent
 {
 	public byte[] Value;
 	public byte[] Orientation;
 
-	public static int Index(int x, int y, int z) => (y * 16 + z) * 16 + x;
+	public static int Index(int x, int y, int z) => (y * VoxelWorld.ChunkSize + z) * VoxelWorld.ChunkSize + x;
 }
 
-/// <summary>Godot nodes backing a chunk. Nodes are created lazily on first mesh.</summary>
+/// <summary>Godot nodes backing a chunk. One mesh/body per section, created lazily on first
+/// build; entries stay null until then. Both work passes wrap from <see cref="Cursor"/>, so a
+/// chunk starts at the section the player is in.</summary>
 public struct ChunkVisual : IComponent
 {
-	public MeshInstance3D Mesh;
-	public StaticBody3D Body;
-	public CollisionShape3D Shape;
+	public const int SectionCount = VoxelWorld.SectionsPerAxis * VoxelWorld.SectionsPerAxis * VoxelWorld.SectionsPerAxis;
+
+	public MeshInstance3D[] Meshes;
+	public StaticBody3D[] Bodies;
+	public CollisionShape3D[] Shapes;
+
+	/// <summary>Where the next mesh/collision pass starts; passes walk
+	/// (Cursor + k) % SectionCount so the player's section is worked first.</summary>
+	public int Cursor;
+
+	/// <summary>One bit per section, set once the section is meshed (or found meshless).
+	/// Wrapping needs a done-set: a monotonic cursor cannot say "all sections were visited".</summary>
+	public ulong MeshDone;
+
+	/// <summary>One bit per section, set once its collision is decided (trimesh, box or all-air).
+	/// The collision gate moves with the player, so a section skipped as out of range stays
+	/// undecided here and is decided later; it cannot ride the mesh done-set.</summary>
+	public ulong CollisionDone;
+
+	// Both masks pack one bit per section, so they only work while SectionCount == 64.
+	static ChunkVisual() => System.Diagnostics.Debug.Assert(SectionCount == sizeof(ulong) * 8);
+
+	/// <summary>Section index = (sy * SectionsPerAxis + sz) * SectionsPerAxis + sx; the returned
+	/// coordinates are chunk-local 0..SectionsPerAxis-1. A world section coordinate is
+	/// chunk * SectionsPerAxis + local.</summary>
+	public static Vector3I SectionOf(int index)
+		=> new(index % VoxelWorld.SectionsPerAxis,
+			index / (VoxelWorld.SectionsPerAxis * VoxelWorld.SectionsPerAxis),
+			index / VoxelWorld.SectionsPerAxis % VoxelWorld.SectionsPerAxis);
 }
 
 // ---- tags: the archetype an entity sits in *is* its lifecycle state ----------

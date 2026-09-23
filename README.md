@@ -5,7 +5,8 @@
 A Minecraft-like voxel sandbox in C# on **Godot 4.7 (.NET)**, architected as an **ECS**
 ([Friflo.Engine.ECS](https://github.com/friflo/Friflo.Engine.ECS)).
 
-Chunks are **16 × 16 × 16 cubes** with **no vertical limit** — build up or dig down forever.
+Chunks are **64 × 64 × 64 blocks** (four 16³ sections per axis; mesh and collision are built one
+section at a time) with **no vertical limit** — build up or dig down forever.
 Terrain spans negative Y, with a bedrock floor and a heightmap surface. Slime mobs wander the
 surface: seeded AI, lightweight AABB movement, no physics bodies.
 
@@ -21,7 +22,7 @@ surface: seeded AI, lightweight AABB movement, no physics bodies.
 ```bash
 dotnet build                                   # build the C# assembly
 godot-mono --path .                            # play
-godot-mono --headless --path . -- --selftest   # 277 headless assertions
+godot-mono --headless --path . -- --selftest   # headless assertions (count 待测 after the 64³ scale change)
 godot-mono --path . -- --demo                  # scripted walk + build + mine-down test
 godot-mono --path . -- --bench                 # performance run with per-system breakdown
 godot-mono --path . -- --shot=out.png          # render one frame to a PNG and quit
@@ -65,7 +66,7 @@ real, the release is not created.
 ```
 scenes/Main.tscn         entry scene (one Node3D with Game.cs)
 src/ChunkComponents.cs   ECS components and tags for a chunk
-src/ChunkMesher.cs       16^3 voxels -> ArrayMesh (one quad per air-facing face)
+src/ChunkMesher.cs       16^3 section -> ArrayMesh (one quad per air-facing face)
 src/TexPack.cs           texture packs: pack.json, four-rung discovery, tile array
 src/voxel_tiles.gdshader spatial shader: tile array + vertex tint, alpha cutout
 src/Blocks.cs            block palette, per-face colours, break times
@@ -82,12 +83,13 @@ src/Game.cs              bootstrap, HUD, sky/fog, test-mode entry points
 src/SelfTest.cs          headless assertions
 src/Bench.cs             performance run
 src/Prof.cs              per-system frame accumulators used by --bench
-docs/                    architecture, performance, roadmap, texture-packs, adding-a-block
+docs/                    architecture, performance, roadmap, texture-packs, adding-a-block, testing
 ```
 
 ## Design in one screen
 
-**Entities** are chunks (~230 resident), the player and up to 48 mobs. A chunk's **archetype is its lifecycle
+**Entities** are chunks (~98 resident at view distance 3; a 64³ chunk is 512 KB, ~50 MB
+resident), the player and up to 48 mobs. A chunk's **archetype is its lifecycle
 state**, so "what work is pending" is a memory-layout fact instead of a flag to check:
 
 ```
@@ -102,7 +104,11 @@ budget, apply structural changes after collecting:
 | | mesh | collision | streaming |
 | --- | --- | --- | --- |
 | query | `AllTags(NeedsMesh)` | `AllTags(NeedsCollision)` | reads the focus |
-| budget | 3 ms | 3 ms | 4 chunks/frame |
+| budget | 3 ms, shared | 3 ms, shared | 4 chunks/frame |
+
+The budget is spent per **16³ section** (64 per chunk), and generation, mesh and collision share
+one per-frame deadline; every round still does at least one work item. See
+[docs/architecture.md](docs/architecture.md) for the ×4 conversion rule.
 
 **Gameplay never mutates the world.** Mining and building *request* edits; the world resolves
 them, and `BlockBehaviors` decides that one break is not one block (felling a tree takes the
@@ -125,6 +131,7 @@ and the known weaknesses — is in **[docs/architecture.md](docs/architecture.md
 | [docs/roadmap.md](docs/roadmap.md) | unlimited dimensions, tools and drops, why per-world parallel tick is the wrong axis |
 | [docs/texture-packs.md](docs/texture-packs.md) | texture pack format: twelve tile keys, `pack.json`, path-traversal rules, discovery rungs, failure matrix, non-goals |
 | [docs/adding-a-block.md](docs/adding-a-block.md) | the reusable recipe for adding a block: append-only vocabulary, art, guards, assertions |
+| [docs/testing.md](docs/testing.md) | the two test tiers (headless vs rendered), how to run locally and in CI, the scenario table, what the harness cannot cover |
 
 ## Performance in one paragraph
 
@@ -133,14 +140,15 @@ the 48-mob cap (bench steady `systems` 0.22 → 0.27 ms); almost all of the ~1.4
 main loop and buffer present, which `--bench --frozen` demonstrates by running the same frame
 with no game code at all. That floor drifts ±30% with GPU thermal state, so frame times are only
 comparable within one session. The real cost is chunk streaming (0.61 ms mesh + 0.32 ms collision
-per chunk), bounded by time budgets rather than chunk counts. Details and numbers in
+per 16³ section — the same unit the old 16³ chunk was), bounded by a shared time budget rather
+than counts. Details, the new-scale numbers and the memory arithmetic are in
 [docs/performance.md](docs/performance.md).
 
 ## Test modes
 
 | flag | what it does |
 | --- | --- |
-| `--selftest` | 277 headless assertions: terrain, mesher cross-checked against brute force, triangle winding, vertical-world invariants, break/place request pipeline, tree felling, per-world terrain, placement preview (ghost, rotate keys, sticky memory), mob spawn plan / movement / pure AI, texture variants (frozen layout, FNV-1a selection, cap, degradation), per-tile size classes (class routing, cap, non-square, VRAM), block entities (O(1) registry, byte/entity sync audit, RMB dispatch, chest vocabulary append-only) |
+| `--selftest` | headless assertions (count 待测 after the 64³ scale change): terrain, mesher cross-checked against brute force, triangle winding, vertical-world invariants, break/place request pipeline, tree felling, per-world terrain, placement preview (ghost, rotate keys, sticky memory), mob spawn plan / movement / pure AI, texture variants (frozen layout, FNV-1a selection, cap, degradation), per-tile size classes (class routing, cap, non-square, VRAM), block entities (O(1) registry, byte/entity sync audit, RMB dispatch, chest vocabulary append-only), collision gate |
 | `--demo` | drives the player without a keyboard: walk, place, then mine straight down 63 blocks to bedrock, asserting they stay on solid ground |
 | `--bench` | five-phase performance run; `--frozen` measures the engine floor, `--view=` / `--collision=` / `--budget=` sweep |
 | `--shot=path.png` | render N frames, save a PNG, quit |

@@ -30,7 +30,7 @@ public enum Placement : byte { None, Axis, Face }
 /// <summary>
 /// Which orientations a block TYPE is allowed to be placed in. This is a property of the type,
 /// not of a voxel: the type table holds one entry per block and a voxel stores only the chosen
-/// byte, so 4096 cells never repeat the same policy. <see cref="Placement"/> is a different
+/// byte, so a chunk's VoxelWorld.ChunkSize³ cells never repeat the same policy. <see cref="Placement"/> is a different
 /// concept - it is where a placement's first orientation comes from, not what is allowed.
 /// </summary>
 public enum OrientationPolicy : byte { Any, Upright, Axis, Fixed }
@@ -45,20 +45,23 @@ public static class Blocks
 
 	public static bool IsSolid(Block b) => b != Block.Air;
 
-	/// <summary>Seconds to break by hand. Negative is unbreakable. Indexed by (int)Block.</summary>
+	/// <summary>Seconds to break by hand. Negative is unbreakable. Indexed by (int)Block.
+	/// Voxels are 1/4 the old edge length, so every value is x0.25: the same seconds now dig
+	/// the same physical depth, at the cost of very fast single-voxel breaks (Leaves 0.05s is
+	/// nearly instant) - an accepted look.</summary>
 	private static readonly float[] Hardness =
 	{
-		-1f,   // Air
-		1.5f,  // Stone
-		0.5f,  // Dirt
-		0.6f,  // Grass
-		0.5f,  // Sand
-		2.0f,  // Wood
-		2.0f,  // Plank
-		0.2f,  // Leaves
-		-1f,   // Bedrock
-		2.0f,  // Chest
-		1.0f,  // Pumpkin
+		-1f,    // Air
+		0.375f, // Stone
+		0.125f, // Dirt
+		0.15f,  // Grass
+		0.125f, // Sand
+		0.5f,   // Wood
+		0.5f,   // Plank
+		0.05f,  // Leaves
+		-1f,    // Bedrock
+		0.5f,   // Chest
+		0.25f,  // Pumpkin
 	};
 
 	public static float HardnessOf(Block b) => Hardness[(int)b];

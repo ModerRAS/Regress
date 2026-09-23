@@ -42,6 +42,8 @@ public partial class Bench : Node
 
 		if (_frame > FlyEnd && _frame <= TeleportEnd && (_frame - FlyEnd) % TeleportStride == 0)
 		{
+			// Must leave the resident radius to force streaming: 300 > the new 192-unit view
+			// (it was > the old 80), so the respawn distance keeps the doc baseline.
 			_player.GlobalPosition += new Vector3(300, 0, 0);
 			PlayerSystems.TeleportToSurface(_player.Self, _world);
 		}
@@ -111,12 +113,13 @@ public partial class Bench : Node
 	private void Report()
 	{
 		GD.Print($"bench adapter: {RenderingServer.GetVideoAdapterName()}");
-		GD.Print($"bench chunks: gen avg={Avg(_world.GenMsTotal, _world.GenCount):F2}ms max={_world.GenMsMax:F2}ms "
-			+ $"n={_world.GenCount} | mesh avg={Avg(_world.MeshMsTotal, _world.MeshCount):F2}ms "
-			+ $"max={_world.MeshMsMax:F2}ms | collision avg={Avg(_world.CollisionMsTotal, _world.CollisionCount):F2}ms "
-			+ $"max={_world.CollisionMsMax:F2}ms n={_world.CollisionCount}");
-		GD.Print($"bench alloc: mesh={_world.MeshAllocBytes / (double)Mathf.Max(1, _world.MeshCount) / 1024.0:F0} KB/chunk, "
-			+ $"collision={_world.CollisionAllocBytes / (double)Mathf.Max(1, _world.CollisionCount) / 1024.0:F0} KB/chunk");
+		GD.Print($"bench work: gen avg={Avg(_world.GenMsTotal, _world.GenCount):F2}ms max={_world.GenMsMax:F2}ms "
+			+ $"n={_world.GenCount} (chunks) | mesh avg={Avg(_world.MeshMsTotal, _world.MeshCount):F2}ms "
+			+ $"max={_world.MeshMsMax:F2}ms n={_world.MeshCount} (sections) | "
+			+ $"collision avg={Avg(_world.CollisionMsTotal, _world.CollisionCount):F2}ms "
+			+ $"max={_world.CollisionMsMax:F2}ms n={_world.CollisionCount} (sections)");
+		GD.Print($"bench alloc: mesh={_world.MeshAllocBytes / (double)Mathf.Max(1, _world.MeshCount) / 1024.0:F0} KB/section, "
+			+ $"collision={_world.CollisionAllocBytes / (double)Mathf.Max(1, _world.CollisionCount) / 1024.0:F0} KB/section");
 		GD.Print($"bench streaming: plans={_world.StreamPlans} unloadScans={_world.UnloadScans}");
 		GD.Print($"bench render: draw calls={Performance.GetMonitor(Performance.Monitor.RenderTotalDrawCallsInFrame)} "
 			+ $"primitives={Performance.GetMonitor(Performance.Monitor.RenderTotalPrimitivesInFrame),0} "
