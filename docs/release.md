@@ -26,18 +26,25 @@ check, but with the project on net9.0 the normal (non-gradle) template route pas
 pipeline keeps the simpler non-gradle export. `Regress.csproj` now targets `net9.0`, and both
 workflows use `dotnet-version: 9.0.x`.
 
-Local .NET environment (measured on the user's machine; end-to-end behavior NOT verified):
+Local .NET environment (measured on the user's machine; local launch verified):
 `dotnet --list-sdks` shows only 10.0.101 and 10.0.301 (no 8.x, no 9.x SDK), and SDK 10 can
 target net9.0, so a local `dotnet build` needs nothing installed — the earlier "needs a .NET 9
-SDK" claim was wrong. `dotnet --list-runtimes` shows 8.0.28 / 10.0.1 / 10.0.9 (no 9.0 runtime);
-net9.0 apps roll forward by default only across minor versions, not major, so a local launch may
-fail with "requires .NET 9.0 runtime". That is unverified — settling it needs a real local
-launch, which this workflow forbids (no local Godot runs). Do not assume either outcome.
+SDK" claim was wrong. `dotnet --list-runtimes` shows 8.0.28 / 10.0.1 / 10.0.9 (no 9.0 runtime),
+yet the merged net9.0 tree still boots: `godot-mono --headless --path . -- --selftest` ends in
+`SELFTEST PASS` (322 ok / 0 FAIL), and `python tools/run_game_tests.py --godot godot-mono
+--tier A` reports 3/3. One prerequisite after the ETC2 setting change: the stale import cache
+must be rebuilt first (`godot-mono --headless --path . --import`), otherwise the game logs
+missing `.ctex` resources and does not finish. A `COREHOST_TRACE=1` run shows why the runtime
+resolves: Godot's own host config (`GodotSharp/Api/Debug/GodotPlugins.runtimeconfig.json`:
+net8.0 + `"rollForward": "LatestMajor"`) drives framework resolution, and hostfxr picks the
+highest installed release — **Microsoft.NETCore.App 10.0.9**; the game assembly's own
+runtimeconfig (net9.0 + `"rollForward": "LatestMinor"`, the Godot.NET.Sdk default) is not the
+resolution path in the editor-host flow. No `<RollForward>` was added to `Regress.csproj`: the
+measured launch does not need one.
 
 Merge order: the TFM bump lands after `feat/scale-64` (all of scale-64's evidence was produced
-on net8.0); after merging, rerun the full suite and do one local launch verification. Do not add
-`<RollForward>Major</RollForward>` now — add it only if that local launch reports the missing 9.0
-runtime.
+on net8.0); after merging, the full suite and the local launch verification were rerun green
+(above), so no `<RollForward>` line is needed.
 
 The Apple embedded export plugin (iOS/macOS) at `4.7.2-stable` has no equivalent TFM
 validation, so the exact Android error will not repeat on iOS; if the iOS export fails under
@@ -309,5 +316,5 @@ release API).
   `export/android/debug_keystore` path, which is the same file).
 - The `publish` step under a real tag has never executed (only its `if` guard is checked); see
   the limits section above.
-- A local launch of the net9.0 build (see the .NET section) and any real-device iOS deployment
-  (the artifact is an unsigned project, never an installable build).
+- Any real-device iOS deployment (the artifact is an unsigned project, never an installable
+  build). The local launch of the net9.0 build is now verified — see the .NET section.
