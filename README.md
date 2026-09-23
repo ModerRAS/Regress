@@ -20,7 +20,7 @@ Terrain spans negative Y, with a bedrock floor and a heightmap surface.
 ```bash
 dotnet build                                   # build the C# assembly
 godot-mono --path .                            # play
-godot-mono --headless --path . -- --selftest   # 69 headless assertions
+godot-mono --headless --path . -- --selftest   # 172 headless assertions
 godot-mono --path . -- --demo                  # scripted walk + build + mine-down test
 godot-mono --path . -- --bench                 # performance run with per-system breakdown
 godot-mono --path . -- --shot=out.png          # render one frame to a PNG and quit
