@@ -267,9 +267,34 @@ Gameplay never mutates the world; it proposes an edit and the world decides.
   single frame while its chunk is still being re-meshed section by section — **a batch edit can
   outrun the collision rebuild.** Any consumer that digs and then drops something into the hole
   must poll the *post-edit* freshness itself (the demo's dig gate does exactly this: it holds the
-  body until every section the shaft spans carries the new collision *and* a ray down the emptied
-  shaft hits nothing). This is a test-script extreme; a player breaking blocks one at a time cannot
-  reach it.
+  body one 16³ section at a time, holding it at the frontier while every dug column below is
+  verified by a per-column assertion — "no collision surface where the block data is air" — and
+  failing loudly if a step cannot clear inside its frame budget). This is a test-script extreme; a
+  player breaking blocks one at a time cannot reach it.
+  - **Corollary: waiting for a whole shaft to become collision-fresh is impossible.** The collision
+    pass rebuilds a section only when the player's section is within `CollisionRadius` sections of
+    it, so a consumer that stands still at the top of a 41-block shaft can never get its deepest
+    sections rebuilt — the ratchet is what makes each step's wait bounded. Waiting for the *whole*
+    volume at once is not an option, and neither is a single ray down the middle: the dug
+    cross-section is 6 cells wide and the body sweeps 4 of them, so a stale face beside the centre
+    line reads as clear (measured: this gate flaked 2 runs out of 4 because the stale face appeared
+    at x = -2 in one run and at x = +2 in another, with opposite normals, while the centre-line ray
+    reported clear in both).
+  - **Known interaction (measured, and the root cause of a long-standing signature): a stepped
+    surface plus a shaft top taken from one column leaves a top layer inside the shaft.** If a
+    scripted dig starts at the surface height of a single scanned column, a neighbouring column one
+    block higher keeps its own top layer inside the dug volume. The player body then rests on a
+    *corner* of that leftover layer — the physics reads the contact as `onFloor`, so
+    `PlayerSystems.Move` stops applying gravity and the body sits there for the rest of the run
+    (measured: 5 runs out of 5, feet 0.278 above the leftover face, exactly one contact with normal
+    `(0, 0.86, -0.51)`). It gets onto it through `Move`'s anti-stuck guard
+    (`IsSolid(feet + 0.4)` → `TeleportToSurface`), which lifts it out of the freshly dug cell onto
+    the leftover layer beside it. That is the real cause of the "`onFloor` true, velocity zero,
+    nothing under the body" signature that looked like stale collision for several rounds — a
+    leftover block, not collision and not streaming. Scripted digs must take their top layer from
+    the **maximum** surface over the whole cross-section and derive their layer count from the cell
+    the body's feet rest on, so the floor lands the intended number of layers below the body's start
+    face: cell index and face value differ by one, and mixing them leaves the drop a block short.
 - **Invariant: the block under the player's feet must be breakable, whether or not its section
   has been meshed.** Collision for a meshless (fully solid or buried) section falls back to a
   `BoxShape3D`, so the player can stand on terrain the mesher has not touched; the break path must
