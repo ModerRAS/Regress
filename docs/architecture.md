@@ -240,3 +240,9 @@ Gameplay never mutates the world; it proposes an edit and the world decides.
 4. **The mesher allocates ~430 KB per chunk** (lists plus `ToArray()` marshalling, now with the
    per-vertex UV and tile-index streams). The millisecond budget absorbs it; a two-pass
    count-then-fill mesher would remove the garbage.
+5. **Chunk-border face culling depends on generation timing.** `VoxelWorld.GetBlock` falls back to
+   the heightmap (`Air` above the surface) for a not-yet-generated neighbour chunk, and the mesher
+   culls border faces against it, so tree canopies and other above-surface art at chunk borders
+   differ between two otherwise identical runs. Rendering-level A/B evidence must use a static
+   close-up or a region whose neighbours are fully generated; wide-shot deltas at foliage/chunk
+   borders are this effect, not flicker of whatever is under test.

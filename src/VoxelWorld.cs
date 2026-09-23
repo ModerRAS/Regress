@@ -57,17 +57,26 @@ public partial class VoxelWorld : Node3D, IBlockReader
         Shader = GD.Load<Shader>("res://src/voxel_tiles.gdshader"),
     };
 
-    private static Texture2DArray _tiles;
+    private static TexPack.Pack _pack;
     private static ShaderMaterial _ghostMaterial;
 
     /// <summary>The shared chunk material. Public so the ghost's own instance can be told apart.</summary>
     public static ShaderMaterial ChunkMaterial => Material;
 
-    /// <summary>Injects the loaded tile array into the shared chunk material.</summary>
-    public static void UseTiles(Texture2DArray tiles)
+    /// <summary>Injects the loaded pack into the shared chunk material: one sampler per size
+    /// class (design P2.3). Absent classes bind class 0's array — nothing references them.</summary>
+    public static void UseTiles(TexPack.Pack pack)
     {
-        _tiles = tiles;
-        Material.SetShaderParameter("tiles", tiles);
+        _pack = pack;
+        BindClasses(Material, pack);
+    }
+
+    /// <summary>One sampler per size class, absent classes bound to class 0's array. The ghost
+    /// uses the same binding, so its preview cannot sample another class's layers.</summary>
+    private static void BindClasses(ShaderMaterial material, TexPack.Pack pack)
+    {
+        for (int c = 0; c < TexPack.MaxSizeClasses; c++)
+            material.SetShaderParameter($"tiles{c}", pack.Arrays[Mathf.Min(c, pack.Classes - 1)]);
     }
 
     /// <summary>Translucent copy of the chunk tiles for the placement preview. Created lazily,
@@ -84,7 +93,7 @@ public partial class VoxelWorld : Node3D, IBlockReader
                 {
                     Shader = GD.Load<Shader>("res://src/ghost_tiles.gdshader"),
                 };
-                if (_tiles != null) _ghostMaterial.SetShaderParameter("tiles", _tiles);
+                if (_pack != null) BindClasses(_ghostMaterial, _pack);
             }
             return _ghostMaterial;
         }

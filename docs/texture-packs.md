@@ -49,7 +49,7 @@ The mesher's side of the contract is three arrays:
 
 ```csharp
 arrays[(int)Mesh.ArrayType.TexUV]  = uvs.ToArray();   // tile-local [0,1], (0,0) = PNG top-left
-arrays[(int)Mesh.ArrayType.TexUV2] = uv2s.ToArray();  // (tileIndex, 0), the frozen index above
+arrays[(int)Mesh.ArrayType.TexUV2] = uv2s.ToArray();  // (layer, class): layer = the frozen index above in the one-class baseline
 // COLOR becomes FaceTint[face] only — never block colour
 ```
 
@@ -57,10 +57,11 @@ arrays[(int)Mesh.ArrayType.TexUV2] = uv2s.ToArray();  // (tileIndex, 0), the fro
   coordinate of exactly `0.0` or `1.0` samples the edge texel, with no wrap and no atlas bleed
   (verified on this build: `u == 1.0` clamps to the last texel under `repeat_disable`, and wraps
   to the first under `repeat_enable` — the hint is load-bearing).
-- `UV2.x` carries the tile's layer index as a float: the canonical key index in the no-variant
-  baseline, and the position-selected variant's layer once variants exist. It is the only channel
-  that selects a tile, which is what makes the atlas fallback (below) a loader-side change with no
-  mesher change.
+- `UV2.x` carries the tile's layer index inside its class's array as a float: the canonical key
+  index in the no-variant baseline, and the position-selected variant's layer once variants exist.
+  `UV2.y` carries the size class — always `0` for a one-class pack (see "Per-tile sizes (size
+  classes)"). `UV2` is the only channel that selects a tile, which is what makes the atlas
+  fallback (below) a loader-side change with no mesher change.
 - Art is authored **along the block's own up direction**. All six face bases are right-handed as
   seen from outside (`u × v = -n`), so a directional glyph reads upright and un-mirrored on every
   face. A block's stored rotation rotates both the tile choice (its local face) and the in-face
@@ -94,7 +95,7 @@ their own tiles, so the alias is behaviourally identical to the override; for Wo
 keeps today's shared log-end on both ends, with `wood_bottom` (layer 39, not shadowed) available
 to make the bottom distinct.
 
-A provided override whose PNG is missing, undecodable, root-escaping or the wrong size is not a
+A provided override whose PNG is missing, undecodable, root-escaping or non-square is not a
 manifest fault: like a base key it claims its slot and the pixels become the pack's `missing`
 tile. The pack is never rejected for it, and an unknown key still warns once and is ignored.
 
@@ -219,10 +220,11 @@ Numbers arrive as `double`, so numeric rules are comparisons, not type identity.
 | --- | --- | --- | --- | --- |
 | `version` | number, integer | **yes** | — | must equal `1`; anything else **rejects the pack** |
 | `name` | string | no | directory name | cosmetic; wrong type warns and takes the directory name |
-| `tile_size` | number, integer | **yes** | — | `>= 1`; the width **and** height of every tile; missing or invalid **rejects the pack** |
+| `tile_size` | number, integer | **yes** | — | `>= 1`; the pack's expected/default square size and the class-0 preference — a tile PNG may ship its own square size (see "Per-tile sizes (size classes)"); missing or invalid **rejects the pack** |
 | `tiles` | object, key → string or array of strings | no | `{}` | keys from the twelve base keys or the 48 override keys; a value is one pack-relative path or a list of them (up to 16 variants, first = primary) |
 
-`tile_size` is required because guessing it silently misaligns every tile. `name` is optional
+`tile_size` is required because it is the pack's declared default size and names the class-0
+preference; a missing or invalid value rejects the pack rather than guessing. `name` is optional
 because nothing renders it. Unknown top-level fields and unknown tile keys warn once and are
 ignored. Duplicate JSON keys are not detected — Godot's parser keeps the last occurrence.
 
@@ -392,13 +394,16 @@ position-selected. Variant values add the list rows below.
 | `tiles` absent / not an object | `tiles is not an object — ignoring` (absent: silent) | all → `missing` |
 | tile value not a string / empty | `tile '<key>' is not a path — using 'missing'` | that tile → `missing` |
 | path escapes the root | `tile '<key>': '<raw>' escapes the pack root — using 'missing'` | that tile → `missing` |
-| tile file missing | `tile '<key>': file not found: <rel> — using 'missing'` | that tile → `missing` |
-| tile not a decodable PNG | `tile '<key>': not a decodable PNG: <rel> — using 'missing'` | that tile → `missing` |
-| tile size ≠ `tile_size` | `tile '<key>': <w>x<h> does not match tile_size <n> — using 'missing'` | that tile → `missing` |
+| tile file missing | `tile '<key>': file not found: <rel> — using 'missing'` | that tile → class 0, `missing` |
+| tile not a decodable PNG | `tile '<key>': not a decodable PNG: <rel> — using 'missing'` | that tile → class 0, `missing` |
+| PNG not square (64×32) | `tile '<key>'[i/n]: 64x32 is not square — using 'missing'` | that tile → class 0, `missing` |
+| size ≠ `tile_size` | *(none — no longer a failure)* | that tile takes its own class (within the cap of 4) |
+| 5th size class | `tile '<key>'[i/n]: size 512 would be class 5 of 4 — using 'missing'` | that tile → class 0, `missing` |
+| degraded slot inside class C | (the per-tile line) | `missing` tile **resized nearest to C's size**; procedural if no `missing` |
 | tile value is an object / number / bool (neither string nor array) | `tile '<key>' is not a path or a list of paths — using 'missing'` | key → 1 slot, `missing` |
 | empty variants array `[]` | `tile '<key>': empty variant list — using 'missing'` | key → 1 slot, `missing` |
 | more than 16 variants | `tile '<key>': <n> variants, cap is 16 — only the first 16 are used` | first 16 kept, the rest dropped |
-| one entry of a variants array is invalid (not a string / empty / escapes root / file missing / undecodable / wrong size) | the matching row above with the variant index `[i/n]` | that variant's slot → `missing` image; the key keeps its other variants |
+| one entry of a variants array is invalid (not a string / empty / escapes root / file missing / undecodable / non-square / over-cap) | the matching row above with the variant index `[i/n]` | that variant's slot → class 0, `missing` image; the key keeps its other variants |
 | every variant of a key invalid | the per-variant lines, one per bad variant | key → 1 slot, `missing` |
 | `Texture2DArray` build returns non-`OK` | `texture array build failed — using procedural tiles` | procedural tiles for the whole pack |
 | `missing` itself unavailable | same lines, tail `— using procedural colour` | procedural tile |
@@ -411,32 +416,42 @@ position-selected. Variant values add the list rows below.
 ## Rendering: one material, one mesh path
 
 There is no pack-present branch in the renderer. `VoxelWorld` replaces its shared
-`StandardMaterial3D` with one shared `ShaderMaterial`; the loader builds a `Texture2DArray` and
-calls `material.SetShaderParameter("tiles", array)`. That uniform and the three mesh arrays above
-are the whole interface between the loader and the renderer.
+`StandardMaterial3D` with one shared `ShaderMaterial`; the loader builds one `Texture2DArray` per
+size class and binds each to `tiles0..tiles3`. Those uniforms and the three mesh arrays above are
+the whole interface between the loader and the renderer.
 
 ```glsl
 shader_type spatial;
 render_mode unshaded, cull_back, depth_draw_opaque;
 
-uniform sampler2DArray tiles : source_color, filter_nearest, repeat_disable;
+uniform sampler2DArray tiles0 : source_color, filter_nearest, repeat_disable;
+uniform sampler2DArray tiles1 : source_color, filter_nearest, repeat_disable;
+uniform sampler2DArray tiles2 : source_color, filter_nearest, repeat_disable;
+uniform sampler2DArray tiles3 : source_color, filter_nearest, repeat_disable;
 
 varying float v_tile;
+varying float v_class;
 
 void vertex() {
-    v_tile = UV2.x;                  // canonical tile index, written by the mesher
+    v_tile  = UV2.x;                 // layer inside its class's array, written by the mesher
+    v_class = UV2.y;                 // size class; 0 for every one-class pack
 }
 
 void fragment() {
-    vec4 t = texture(tiles, vec3(UV, v_tile));
+    // GLSL cannot index a sampler array dynamically: uniform branch on the class.
+    vec4 t = v_class < 0.5 ? texture(tiles0, vec3(UV, v_tile))
+           : v_class < 1.5 ? texture(tiles1, vec3(UV, v_tile))
+           : v_class < 2.5 ? texture(tiles2, vec3(UV, v_tile))
+                           : texture(tiles3, vec3(UV, v_tile));
     ALBEDO = t.rgb * COLOR.rgb;      // COLOR is tint only
     ALPHA  = t.a;
     ALPHA_SCISSOR_THRESHOLD = 0.5;   // cutout: no blending, no sorting, depth stays opaque
 }
 ```
 
-- **Per-face selection** is `UV2.x` → array layer. A block's six faces may name six different
-  keys (Grass does), and the mesher emits one quad per face with that face's index.
+- **Per-face selection** is `UV2` → (class array, layer inside it). A block's six faces may name
+  six different keys (Grass does), and the mesher emits one quad per face with that face's
+  `(layer, class)`.
 - **`COLOR` is tint only.** The mesher writes `FaceTint[face]` — `0.72, 0.72, 1.00, 0.45, 0.86,
   0.86`, the same linear numbers used today — and block identity lives *only* in the tile. For
   every block, including Bedrock and blocks adjacent to Air, no block-colour term may appear in
@@ -477,7 +492,7 @@ zero-diff regression baseline; a 1/255 shift will read as a regression.
 
 **Chosen: `Texture2DArray`.** Twelve images for a base-only pack, 60 once any override is used
 and no variants are declared (the unused slots hold the `missing` tile; variants add layers — see
-"Texture variants"), one sampler, per-vertex layer index, no UV rects, no atlas packing, no
+"Texture variants"), one sampler per size class (up to four), per-vertex `(layer, class)`, no UV rects, no atlas packing, no
 bleeding — a tile is a file.
 
 **Fallback: a single atlas image.** If array sampling ever fails on a target, the loader builds a
@@ -540,7 +555,7 @@ the bundled pack, `--pack=texturepacks/default`. Restart to change packs — v1 
 | not in v1 | upgrade path |
 | --- | --- |
 | animated textures | a `frames` list per key + time-based UV offset in the shader |
-| non-uniform tile sizes | per-tile size + one array per size class |
+| non-uniform tile sizes | **implemented (size classes)** — class inferred per tile, one `sampler2DArray` per class (cap 4); cost is the VRAM table and the per-class arrays (see "Per-tile sizes (size classes)") |
 | PBR (normal/roughness/emission) maps | extra arrays and sampler inputs per key |
 | mipmaps and anisotropic filtering | `generate_mipmaps` + sampler hints when minification shimmers |
 | block definitions in packs (hardness, drops, new blocks) | a block registry file; art-only packs are the seam |
@@ -611,7 +626,7 @@ up to 16 variants, first = primary.
 
 - **Key order is frozen** — the twelve base keys, then the 48 face cells, never reordered. Each
   key contributes one **consecutive** layer per **declared** variant (capped at 16), in manifest
-  order: a declared variant whose PNG is missing, undecodable or the wrong size keeps its slot and
+  order: a declared variant whose PNG is missing, undecodable or non-square keeps its slot and
   degrades to the `missing` image, so `stone = [ok, corrupt, ok]` allocates 3 layers with the
   middle one `missing`. Only a key with **zero decodable variants** — an empty list, a non-list
   value, or every variant bad — contributes exactly one slot, today's degradation.
@@ -675,3 +690,105 @@ texpack: <source>: <Layers> layers, <K> keys with variants (cap 16)
 
 `<Layers>` is the actual `Texture2DArray` layer count and `<K>` the number of keys with two or
 more valid variants.
+
+## Per-tile sizes (size classes)
+
+`tile_size` has always existed and has always been a **whole-pack uniform size** — a uniformly
+16/32/64/256 pack loads today (the bundled default happens to be 16). The gap was never "tile size
+support"; it was **mixing sizes inside one pack**, which v1 listed as a non-goal. A
+`Texture2DArray` requires every layer to share size and format, so one array holds exactly one
+size; mixed sizes therefore need **one array per size class**.
+
+### The class model
+
+- **A class is inferred from each PNG's own square edge** — self-describing, no new manifest
+  field. `tile_size` stays the pack's expected/default size — the class-0 preference, i.e. the
+  class for slots whose size can never be inferred.
+- **Class 0 is the baseline class**: the `tile_size` class when any slot has that size, otherwise
+  the first square size in frozen key order. Slots that never decoded (missing file, corrupt PNG,
+  non-square, over-cap) always join class 0. Other classes get indices `1..C-1` in
+  first-appearance order over the frozen key scan; a pack's indices are stable. A uniform pack —
+  whatever its size — has exactly one class, class 0, so class 0 is never an empty leftover.
+- **Cap: four classes** (`MaxSizeClasses = 4`). A fifth distinct size degrades **that tile** to
+  `missing` in class 0 — never a pack rejection, never a crash:
+
+  ```
+  tile '<key>'[i/n]: size 512 would be class 5 of 4 — using 'missing'
+  ```
+
+  A non-square PNG is likewise not a pack fault; that slot becomes `missing` in class 0:
+
+  ```
+  tile '<key>'[i/n]: 64x32 is not square — using 'missing'
+  ```
+
+- **`size != tile_size` is no longer a failure.** The old "PNG size must equal `tile_size`" rule is
+  gone: a tile that differs takes its own class (within the cap). A uniform pack is unaffected —
+  its PNGs equal `tile_size`.
+
+### Layer layout: one array per class
+
+Layer numbering is **per class array**: within class C, filtered to the keys whose slots live in
+C, frozen key order still applies and each key contributes `max(1, validCount)` consecutive
+layers. A key whose variants span classes has slots in several arrays; there is no single global
+layer number for it.
+
+`TexPack.LayerCount = KeyCount + FaceKeys.Length = 60` (`KeyCount` stays 12) remains the
+**no-variant, no-class baseline slot space** anchor, and size classes do **not** change it. A
+class array's actual layer count travels in a different carrier — `Pack.Layers` / each class's own
+count — never in `LayerCount`. Every Phase 1 rule still holds in Phase 2: a pack whose every PNG
+equals `tile_size` has exactly one class, class index `0` on every face, and layer numbers, layout
+and `Sources` byte-identical to Phase 1 and the pre-variants build. Asserted (E10), not claimed.
+
+### VRAM
+
+RGBA8 = 4 B/texel:
+
+| edge | bytes/layer | ×12 base keys | note |
+| --- | --- | --- | --- |
+| 16 | 1 KiB | 12 KiB | default pack |
+| 32 | 4 KiB | 48 KiB | |
+| 64 | 16 KiB | 192 KiB | |
+| 256 | 256 KiB | 3 MiB | |
+| 1024 | 4 MiB | 48 MiB | |
+| 4096 | 64 MiB | **768 MiB** | 60-layer override layout = **3.75 GiB** — whole-pack 4096 is not realistic; only faces that need it should pay |
+
+Not free: each class occupies its own `sampler2DArray` slot (four uniforms total) and adds the
+uniform branch that selects it. The win is that a pack pays per class, not for its largest tile
+across every key.
+
+### Contract: `UV2 = (layer, class)`
+
+`UV2` is now a tuple instead of a scalar: `UV2.x` is the layer inside that class's array, `UV2.y`
+is the class index. The class is a per-key constant carried in the same precomputed slot table the
+variant hash already indexes, so the mesher adds no per-face arithmetic and writes
+`new Vector2(tile.Layer, tile.Class)`. `TileIndex(Block, face)` still returns the primary slot's
+layer for the frozen/class-0 assertions.
+
+`UV2.y == 0` for every pack that has one class — today's meshes already carry `UV2.y = 0`, so the
+single-class path is unchanged. The shader gains one `sampler2DArray` per class (`tiles0..tiles3`),
+all `source_color, filter_nearest, repeat_disable`, selected by a uniform branch on `UV2.y` (GLSL
+cannot index sampler arrays dynamically); absent classes bind the first array, and nothing
+references them. `VoxelWorld.UseTiles(Texture2DArray)` becomes `UseTiles(TexPack.Pack)`, with
+`Game.cs` still the only call site.
+
+### No mipmaps: the shimmer warning
+
+v1 still loads images with mipmaps off. A high-resolution tile minified in the distance therefore
+**shimmers** — size classes make this easier to see, because a sharp 256² or larger face can now
+sit next to 16² art. The fix remains the non-goal upgrade path (`generate_mipmaps` plus sampler
+hints); mipmaps stay a non-goal.
+
+### Reporting
+
+The success line is untouched, byte for byte — release smoke-test greps and this quote stay valid:
+
+```
+texpack: using 'Default' (res://texturepacks/default) tile_size=16 tiles=12/12
+```
+
+Mixed packs add one VRAM line, printed only when `Classes > 1`:
+
+```
+texpack: <source>: <C> size classes — 16x16: 12 layers (12 KiB), 256x256: 1 layer (256 KiB), total 268 KiB
+```

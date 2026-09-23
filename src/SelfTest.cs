@@ -213,6 +213,7 @@ public static class SelfTest
         CheckBlockEntities(world);
         CheckMobs(world);
         CheckTextureVariants(world);
+        CheckSizeClasses(world);
 
         return _failures;
     }
@@ -1241,15 +1242,18 @@ public static class SelfTest
             && escaped.Sources[0] == TexPack.TileSource.Missing && escaped.Sources[11] == TexPack.TileSource.Png,
             $"escaped stone path falls back to the missing tile ({escaped.Resolved}/12)");
 
-        // A wrong-size tile loses only that tile.
+        // A square tile that is not `tile_size` is no longer a failure: it gets its own class
+        // (design P2.4). 11x16² + stone 8² -> class 0 = 16, class 1 = 8.
         string wrongSize = baseDir + "/size";
         WritePack(wrongSize, 1, AllTiles());
         for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(wrongSize, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
         WriteTile(wrongSize, "tiles/stone.png", 8, Colors.Red);
         var sized = TexPack.Load(wrongSize);
-        Check(sized.Source == wrongSize && sized.Resolved == 11
-            && sized.Sources[0] == TexPack.TileSource.Missing && sized.Sources[11] == TexPack.TileSource.Png,
-            $"wrong-size tile falls back to the missing tile ({sized.Resolved}/12)");
+        var sizedStone = TexPack.TileAt(Block.Stone, Face.Top, 0, 0, 0);
+        Check(sized.Source == wrongSize && sized.Resolved == 12 && sized.Layers == 12 && sized.Classes == 2
+            && sized.ClassSizes[1] == 8 && sized.ClassLayers[1] == 1 && sizedStone.Class == 1
+            && sized.Sources[0] == TexPack.TileSource.Png,
+            $"an 8x8 tile gets its own size class, not a fallback ({sized.Classes} classes, stone class {sizedStone.Class})");
 
         // Unknown key and unknown field are ignored with warnings; the pack still loads.
         string unknown = baseDir + "/unknown";
@@ -1851,7 +1855,7 @@ public static class SelfTest
         for (int z = 0; z < 16; z++)
             for (int x = 0; x < 16; x++)
             {
-                int layer = TexPack.TileIndex(Block.Stone, Face.Top, x, 7, z);
+                int layer = TexPack.TileAt(Block.Stone, Face.Top, x, 7, z).Layer;
                 int slot = Array.IndexOf(stoneLayers, layer);
                 if (slot < 0) outsideSample++; else hist[slot]++;
             }
@@ -1876,7 +1880,7 @@ public static class SelfTest
         if (mixedLayers.Length == 3)
             for (int z = 0; z < 16; z++)
                 for (int x = 0; x < 16; x++)
-                    if (TexPack.TileIndex(Block.Stone, Face.Top, x, 7, z) == mixedLayers[1]) picks++;
+                    if (TexPack.TileAt(Block.Stone, Face.Top, x, 7, z).Layer == mixedLayers[1]) picks++;
         Check(mixedLayers.Length == 3 && mixed.Layers == 14
             && mixed.Sources[mixedLayers[0]] == TexPack.TileSource.Png
             && mixed.Sources[mixedLayers[1]] == TexPack.TileSource.Missing
@@ -1904,6 +1908,184 @@ public static class SelfTest
         if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
     }
 
+    // ---- size classes ----------------------------------------------------
+
+    /// <summary>Design P2.5 (E10-E15): single-class equivalence, class routing, the cap, the
+    /// non-square row, the sizes-demo pack and the mixed-pack VRAM arithmetic.</summary>
+    private static void CheckSizeClasses(VoxelWorld world)
+    {
+        GD.Print("  ---- size classes ----");
+        string baseDir = ProjectSettings.GlobalizePath("user://texpack_selftest");
+        if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
+
+        // The frozen 48-cell table, rows by Renderable order, cols by Face (PosX..NegZ).
+        int[] frozen =
+        {
+            0, 0, 0, 0, 0, 0,        // Stone
+            1, 1, 1, 1, 1, 1,        // Dirt
+            3, 3, 2, 4, 3, 3,        // Grass: sides, top, bottom
+            5, 5, 5, 5, 5, 5,        // Sand
+            6, 6, 7, 7, 6, 6,        // Wood: top and bottom share the end grain
+            8, 8, 8, 8, 8, 8,        // Plank
+            9, 9, 9, 9, 9, 9,        // Leaves
+            10, 10, 10, 10, 10, 10,  // Bedrock
+        };
+
+        // E10: the real default pack is one class, and every cell is byte-identical to the
+        // Phase-1 layout — class 0, frozen layer numbers, class-0 array = the whole array.
+        const string defaultPack = "res://texturepacks/default";
+        var def = TexPack.Load(defaultPack);
+        int classWrong = 0, layerWrong = 0, mapWrong = 0;
+        for (int b = 0; b < TexPack.Renderable.Length; b++)
+            for (int f = 0; f < 6; f++)
+            {
+                if (TexPack.TileAt(TexPack.Renderable[b], f, 0, 0, 0).Class != 0) classWrong++;
+                if (TexPack.TileIndex(TexPack.Renderable[b], f) != frozen[b * 6 + f]) mapWrong++;
+                var got = TexPack.LayersFor(TexPack.Renderable[b], f);
+                if (got.Length != 1 || got[0] != frozen[b * 6 + f]) layerWrong++;
+            }
+        int defPng = 0;
+        foreach (var source in def.Sources) if (source == TexPack.TileSource.Png) defPng++;
+        Check(def.Source == defaultPack && def.Classes == 1 && def.Arrays.Length == 1
+            && def.Array.GetLayers() == TexPack.KeyCount && def.Layers == TexPack.KeyCount
+            && def.ClassLayers[0] == TexPack.KeyCount && def.ClassSizes[0] == def.TileSize
+            && classWrong == 0 && mapWrong == 0 && layerWrong == 0 && defPng == TexPack.KeyCount,
+            $"E10 default pack: 1 size class, all 48 cells class 0 with the frozen layers ({mapWrong} map, {layerWrong} layer, {defPng}/{TexPack.KeyCount} Png)");
+
+        // E11: 3 classes (16/32/64). Every face routes to its key's class, the class edge is the
+        // PNG edge, and the layer exists in that class's array.
+        string mixed = baseDir + "/sizeclasses";
+        WritePack(mixed, 1, AllTiles());
+        for (int i = 0; i < TexPack.KeyCount; i++)
+            WriteTile(mixed, $"tiles/{TexPack.Keys[i]}.png", i == 0 ? 32 : i == 1 ? 64 : 16, KeyColor(i));
+        var mix = TexPack.Load(mixed);
+        int routeWrong = 0, edgeWrong = 0, existsWrong = 0;
+        for (int b = 0; b < TexPack.Renderable.Length; b++)
+            for (int f = 0; f < 6; f++)
+                for (int p = 0; p < 4; p++)
+                {
+                    int key = frozen[b * 6 + f];
+                    int wantClass = key == 0 ? 1 : key == 1 ? 2 : 0;
+                    int wantEdge = key == 0 ? 32 : key == 1 ? 64 : 16;
+                    var tile = TexPack.TileAt(TexPack.Renderable[b], f, p * 7, 3, p * 5);
+                    if (tile.Class != wantClass) routeWrong++;
+                    if (mix.ClassSizes[tile.Class] != wantEdge) edgeWrong++;
+                    if (tile.Layer >= mix.Arrays[tile.Class].GetLayers()) existsWrong++;
+                }
+        // The mesher (and the ghost preview, same emitter) writes that (layer, class) to UV2.
+        var chunk = world.CreateChunk(new Vector3I(160, 70, 160));
+        var blocks = chunk.GetComponent<ChunkBlocks>().Value;
+        Array.Clear(blocks);
+        blocks[ChunkBlocks.Index(3, 4, 5)] = (byte)Block.Stone;
+        var arrays = ChunkMesher.Build(world, chunk.GetComponent<ChunkCoord>(), blocks, out _).SurfaceGetArrays(0);
+        var norms = (Vector3[])arrays[(int)Mesh.ArrayType.Normal];
+        var uv2 = (Vector2[])arrays[(int)Mesh.ArrayType.TexUV2];
+        int wx = 160 * 16 + 3, wy = 70 * 16 + 4, wz = 160 * 16 + 5;
+        int meshWrong = 0;
+        for (int i = 0; i < norms.Length; i++)
+        {
+            var tile = TexPack.TileAt(Block.Stone, FaceOfNormal(norms[i]), wx, wy, wz);
+            if (uv2[i].X != tile.Layer || uv2[i].Y != tile.Class || tile.Class != 1) meshWrong++;
+        }
+        var ghostMesh = ChunkMesher.BuildBlock(Block.Stone, Orientation.None);
+        var ghostUv2 = (Vector2[])ghostMesh.SurfaceGetArrays(0)[(int)Mesh.ArrayType.TexUV2];
+        int ghostWrong = 0;
+        for (int i = 0; i < ghostUv2.Length; i++)
+            if (ghostUv2[i].Y != 1f) ghostWrong++;
+
+        var ghostMaterial = VoxelWorld.GhostMaterial;
+        bool ghostBound = ghostMaterial.GetShaderParameter("tiles0").As<Texture2DArray>() != null
+            && ghostMaterial.GetShaderParameter("tiles1").As<Texture2DArray>() != null
+            && ghostMaterial.GetShaderParameter("tiles2").As<Texture2DArray>() != null
+            && ghostMaterial.GetShaderParameter("tiles3").As<Texture2DArray>() != null;
+
+        Check(mix.Source == mixed && mix.Classes == 3 && mix.ClassSizes[0] == 16
+            && mix.ClassSizes[1] == 32 && mix.ClassSizes[2] == 64 && mix.Layers == 12
+            && routeWrong == 0 && edgeWrong == 0 && existsWrong == 0
+            && norms.Length == 24 && meshWrong == 0 && ghostUv2.Length == 24 && ghostWrong == 0 && ghostBound,
+            $"E11 mixed pack: {mix.Classes} classes route class/edge/array ({routeWrong}/{edgeWrong}/{existsWrong} wrong), "
+            + $"mesher + ghost UV2 carry class 1 ({meshWrong}/{ghostWrong} wrong), ghost tiles0..3 bound");
+
+        // E12: five distinct sizes -> cap 4; the 5th (plank 256²) degrades to `missing` in class 0.
+        string cap = baseDir + "/sizecap";
+        WritePack(cap, 1, AllTiles());
+        for (int i = 0; i < TexPack.KeyCount; i++)
+        {
+            int size = i == 0 ? 32 : i == 1 ? 64 : i == 5 ? 128 : i == 8 ? 256 : 16;
+            WriteTile(cap, $"tiles/{TexPack.Keys[i]}.png", size, KeyColor(i));
+        }
+        var capped = TexPack.Load(cap);
+        var plankSlot = TexPack.TileAt(Block.Plank, Face.Top, 0, 0, 0);
+        var plankLayers = TexPack.LayersFor(Block.Plank, Face.Top);
+        string capWarning = $"texpack: {cap}: tile 'plank': size 256 would be class 5 of 4 — using 'missing'";
+        Check(capped.Classes == 4 && capped.ClassSizes[0] == 16 && capped.ClassSizes[3] == 128
+            && plankSlot.Class == 0 && plankLayers.Length == 1
+            && capped.Sources[plankLayers[0]] == TexPack.TileSource.Missing
+            && HasWarning(capWarning),
+            $"E12 5 sizes: cap is {capped.Classes}, the 5th is `missing` in class 0 (warning quoted)");
+
+        // E13: a 64x32 PNG has no inferable size -> exact warning, class-0 `missing`, pack loads.
+        string nonSquare = baseDir + "/sizenonsquare";
+        WritePack(nonSquare, 1, AllTiles());
+        for (int i = 0; i < TexPack.KeyCount; i++) WriteTile(nonSquare, $"tiles/{TexPack.Keys[i]}.png", 16, KeyColor(i));
+        WriteRectTile(nonSquare, "tiles/stone.png", 64, 32, Colors.Red);
+        var squared = TexPack.Load(nonSquare);
+        string squareWarning = $"texpack: {nonSquare}: tile 'stone': 64x32 is not square — using 'missing'";
+        Check(squared.Source == nonSquare && squared.Resolved == 11 && squared.Classes == 1
+            && squared.Sources[0] == TexPack.TileSource.Missing && HasWarning(squareWarning),
+            $"E13 64x32 tile: exact non-square warning, class-0 `missing`, pack still loads ({squared.Resolved}/12)");
+
+        // E14/E15: sizes-demo (worker B2) or its inline equivalent — sand 64², leaves 256².
+        const string demo = "res://texturepacks/sizes-demo";
+        bool haveDemo = DirAccess.DirExistsAbsolute(demo);
+        string which = haveDemo ? demo : baseDir + "/sizeeq";
+        if (!haveDemo)
+        {
+            WritePack(which, 1, AllTiles());
+            for (int i = 0; i < TexPack.KeyCount; i++)
+                WriteTile(which, $"tiles/{TexPack.Keys[i]}.png", i == 5 ? 64 : i == 9 ? 256 : 16, KeyColor(i));
+        }
+        var demoPack = TexPack.Load(which);
+        var sand = TexPack.TileAt(Block.Sand, Face.Top, 0, 0, 0);
+        var leaves = TexPack.TileAt(Block.Leaves, Face.Top, 0, 0, 0);
+        Check(demoPack.Source == which && demoPack.Classes == 3
+            && demoPack.ClassSizes[0] == 16 && demoPack.ClassSizes[1] == 64 && demoPack.ClassSizes[2] == 256
+            && demoPack.ClassLayers[0] == 10 && demoPack.ClassLayers[1] == 1 && demoPack.ClassLayers[2] == 1
+            && demoPack.Layers == 12 && demoPack.Arrays[2].GetLayers() == 1
+            && sand.Class == 1 && leaves.Class == 2,
+            $"E14 sizes-demo{(haveDemo ? "" : " (equivalent, res:// pack absent)")}: {demoPack.Classes} classes, layers [{string.Join(", ", demoPack.ClassLayers)}], 256² edge {demoPack.ClassSizes[2]}");
+
+        string wantVram = $"texpack: {which}: 3 size classes — 16x16: 10 layers (10 KiB), 64x64: 1 layer (16 KiB), 256x256: 1 layer (256 KiB), total 282 KiB";
+        long vramBytes = 0;
+        int vramWrong = 0;
+        for (int c = 0; c < demoPack.Classes; c++)
+        {
+            long bytes = (long)demoPack.ClassSizes[c] * demoPack.ClassSizes[c] * 4 * demoPack.ClassLayers[c];
+            vramBytes += bytes;
+            if (bytes != (c == 0 ? 10L : c == 1 ? 16L : 256L) * 1024) vramWrong++;
+        }
+        Check(demoPack.VramLine == wantVram && vramBytes == 282 * 1024 && vramWrong == 0,
+            $"E15 VRAM line arithmetic matches RGBA8 4 B/texel ({demoPack.VramLine})");
+
+        if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
+    }
+
+    /// <summary>True when the last <see cref="TexPack.Load"/> recorded this exact size-class warning.</summary>
+    private static bool HasWarning(string want)
+    {
+        foreach (var warning in TexPack.Warnings)
+            if (warning == want) return true;
+        return false;
+    }
+
+    private static void WriteRectTile(string packDir, string rel, int width, int height, Color color)
+    {
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(packDir + "/" + rel));
+        var image = Image.CreateEmpty(width, height, false, Image.Format.Rgba8);
+        image.Fill(color);
+        image.SavePng(packDir + "/" + rel);
+    }
+
     /// <summary>Builds a chunk whose only solid block sits at local (3, 4, 5) and counts the
     /// vertices whose UV2.x disagrees with the absolute-coordinate tile index (0 = every one
     /// of the six faces agrees).</summary>
@@ -1919,7 +2101,10 @@ public static class SelfTest
         int wx = chunkKey.X * 16 + 3, wy = chunkKey.Y * 16 + 4, wz = chunkKey.Z * 16 + 5;
         int wrong = 0;
         for (int i = 0; i < norms.Length; i++)
-            if (uv2[i].X != TexPack.TileIndex(Block.Stone, FaceOfNormal(norms[i]), wx, wy, wz)) wrong++;
+        {
+            var tile = TexPack.TileAt(Block.Stone, FaceOfNormal(norms[i]), wx, wy, wz);
+            if (uv2[i].X != tile.Layer || uv2[i].Y != tile.Class) wrong++;
+        }
         return wrong;
     }
 

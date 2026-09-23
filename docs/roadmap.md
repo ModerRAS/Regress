@@ -11,7 +11,7 @@
 - **Block edits as a request pipeline** — hardness-based mining duration, tree felling via
   `BlockBehaviors`, placement legality in one place.
 - **ECS** — chunk lifecycle expressed as archetypes; see [architecture.md](architecture.md).
-- **Test harness** — `--selftest` (242 assertions), `--demo` (scripted walk / build / mine),
+- **Test harness** — `--selftest` (248 assertions), `--demo` (scripted walk / build / mine),
   `--bench` (five-phase performance run with per-system breakdown), `--shot`, `--map`,
   `--freecam`, `--frozen`, `--diag`.
 - **Texture packs v1** — `pack.json` + twelve keyed tiles, four-rung discovery ending in

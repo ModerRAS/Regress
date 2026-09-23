@@ -162,9 +162,10 @@ public static class ChunkMesher
 		float tint = FaceTint[face];
 		var color = new Color(tint, tint, tint);
 		var normal = new Vector3(d.X, d.Y, d.Z);
-		// The tile is the one for the LOCAL face the rotation puts here, not the world face, and
-		// the variant is chosen from the block's absolute world position (design §3).
-		int tile = TexPack.TileIndex(block, Orientation.LocalFace(orientation, face), bx + x, by + y, bz + z);
+		// The tile is the one for the LOCAL face the rotation puts here, not the world face; the
+		// variant is chosen from the block's absolute world position and the size class travels
+		// with the layer, so UV2 = (layer, class) (design §3, P2.2).
+		var tile = TexPack.TileAt(block, Orientation.LocalFace(orientation, face), bx + x, by + y, bz + z);
 		for (int i = 0; i < 4; i++)
 		{
 			int cx = corner[i * 3], cy = corner[i * 3 + 1], cz = corner[i * 3 + 2];
@@ -172,7 +173,7 @@ public static class ChunkMesher
 			norms.Add(normal);
 			cols.Add(color);
 			uvs.Add(Orientation.Uv(orientation, face, cx, cy, cz));
-			uv2s.Add(new Vector2(tile, 0f));
+			uv2s.Add(new Vector2(tile.Layer, tile.Class));
 		}
 
 		// Godot treats clockwise triangles as front-facing, so the CCW corner order above

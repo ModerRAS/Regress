@@ -11,8 +11,9 @@ The v1 format is specified in [`docs/texture-packs.md`](../docs/texture-packs.md
 ## Pack author quick start
 
 A pack is a directory with a `pack.json` and the PNGs it names. Twelve base keys, fixed indices
-— see the spec's completeness table. Every tile is the same `tile_size × tile_size`, RGBA, and
-`missing` is the fallback for anything absent or invalid.
+— see the spec's completeness table. Every tile is square and RGBA; `tile_size` is the pack's
+expected/default size, and individual tiles may differ (see size classes below). `missing` is the
+fallback for anything absent or invalid.
 
 Packs may also override individual cube faces with optional `<block>_<suffix>` keys
 (`stone_posx`, `leaves_negz`, …), where `<block>` is a renderable block and `<suffix>` is one of
@@ -30,6 +31,14 @@ a manifest with no arrays keeps the byte-identical old layout while `LayerCount 
 no-variant baseline, not an array size; only `missing`'s first valid variant is the one fixed
 fallback image for degraded slots, and the worst case (all 60 keys × 16 variants) is 960 layers
 ≈ 960 KiB. See "Texture variants" in the spec.
+
+Tile size is per tile, not per pack: each PNG's own square edge picks its **size class**, so one
+pack can mix a 16² base with a 256² close-up face. Up to **4 classes** (`MaxSizeClasses = 4`); a
+pack whose PNGs all equal `tile_size` has exactly one class, class 0 (the `tile_size` class, else
+the first square size in key order). Class 0 is the baseline and the fallback home of anything
+undecodable or non-square, each class gets its own array, and a fifth distinct size or a
+non-square PNG degrades that tile to `missing` — never a rejected pack. See "Per-tile sizes (size
+classes)" in the spec.
 
 Per-face tiles name a per **local** face, and a placed block now carries one of the 24 cube
 rotations, so its tiles and their in-face UVs rotate with the block: a letter or arrow stays

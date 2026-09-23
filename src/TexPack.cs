@@ -6,9 +6,10 @@ namespace Regress;
 
 /// <summary>
 /// Loads a texture pack — a directory with <c>pack.json</c> and the PNGs it names — into one
-/// <see cref="Texture2DArray"/>. Discovery has four rungs and never fails: the last rung
-/// synthesises the twelve tiles in memory, so the game always renders. The format, the key
-/// order and the failure matrix are frozen in docs/texture-packs.md.
+/// <see cref="Texture2DArray"/> per size class. Discovery has four rungs and never fails: the
+/// last rung synthesises the twelve tiles in memory, so the game always renders. The format,
+/// the key order and the failure matrix are frozen in docs/texture-packs.md; the size-class
+/// model (class 0 baseline, cap 4, per-class layer numbering) is frozen in design.md P2.1.
 /// </summary>
 public static class TexPack
 {
@@ -17,6 +18,10 @@ public static class TexPack
 
     /// <summary>Most variants one key may declare (design §5). 60 keys x 16 = 960 layers ceiling.</summary>
     public const int MaxVariants = 16;
+
+    /// <summary>Most size classes one pack may use (design P2.1). A 5th distinct size degrades
+    /// that tile to `missing` in class 0; it never rejects the pack.</summary>
+    public const int MaxSizeClasses = 4;
 
     /// <summary>Frozen layer order. Never renumbered.</summary>
     public static readonly string[] Keys =
@@ -38,8 +43,9 @@ public static class TexPack
     public static readonly string[] FaceKeys = BuildFaceKeys();
 
     /// <summary>Array layers the loader may need: 12 base + 48 optional per-face slots.
-    /// This stays the frozen no-variant baseline slot space; a variant pack's array is
-    /// <see cref="Pack.Layers"/> layers, computed by the uniform slot rule (design §2).</summary>
+    /// This stays the frozen no-variant baseline slot space; a variant or mixed-size pack's
+    /// arrays are <see cref="Pack.Layers"/> / <see cref="Pack.ClassLayers"/> layers, computed
+    /// by the uniform slot rule (design §2) inside each size class (design P2.1).</summary>
     public static readonly int LayerCount = KeyCount + FaceKeys.Length;
 
     /// <summary>Rung-4 art, authored in sRGB — the sampler's source_color conversion yields linear.</summary>
@@ -56,22 +62,43 @@ public static class TexPack
 
     public sealed class Pack
     {
+        /// <summary>Class 0's array — the only array of a single-class pack.</summary>
         public Texture2DArray Array;
+
+        /// <summary>One array per size class, class 0 first. <c>Array == Arrays[0]</c>.</summary>
+        public Texture2DArray[] Arrays;
+
+        /// <summary>Number of size classes, 1..<see cref="MaxSizeClasses"/>.</summary>
+        public int Classes;
+
+        /// <summary>Square edge per class; ClassSizes[0] is the baseline class.</summary>
+        public int[] ClassSizes;
+
+        /// <summary>Array layer count per class.</summary>
+        public int[] ClassLayers;
+
+        /// <summary>The mixed-pack VRAM report line, or null when Classes == 1 (design P2.4).</summary>
+        public string VramLine;
+
         public int TileSize;
         public string Name;
         public string Source;
         public int Resolved;
         public bool Procedural;
         public int FaceOverrides;
+
+        /// <summary>Where class 0's layers came from — the loader's own account of the fallback matrix.</summary>
         public TileSource[] Sources;
 
-        /// <summary>Actual Texture2DArray layer count: the sum of every enumerated key's slots.</summary>
+        /// <summary>Total Texture2DArray layers across every class.</summary>
         public int Layers;
 
         /// <summary>Keys with at least two decodable variants (the new report line's K).</summary>
         public int VariantKeys;
 
-        /// <summary>Slot layers per key, primary first; null = the pack does not enumerate that key.</summary>
+        /// <summary>Class-0 slot layers per key, primary first; null = the pack does not
+        /// enumerate that key. A key whose variants all live in another class has none here —
+        /// use <see cref="TileAt"/> for class-aware routing.</summary>
         public int[][] KeyLayers;
     }
 
@@ -94,14 +121,19 @@ public static class TexPack
     /// <summary>The last accepted pack's resolution; the frozen fallback until one loads.</summary>
     private static int[] _resolved = Frozen;
 
-    /// <summary>Slot layers per key, frozen order; null = the last pack does not enumerate it.</summary>
+    /// <summary>Class-0 slot layers per key, frozen order; null = the last pack does not enumerate it.</summary>
     private static int[][] _keyLayers = FrozenSlots();
 
-    /// <summary>The selectable layers per key — decodable variants only, primary-first order.</summary>
-    private static int[][] _validLayers = _keyLayers;
+    /// <summary>Decodable (layer, class) pairs per key, declaration order, primary first — the
+    /// variant hash indexes this table (design P2.2).</summary>
+    private static (int Layer, int Class)[][] _validSlots = EmptySlots();
+
+    /// <summary>Every enumerated key's primary (layer, class): the first declared variant, or
+    /// the single degraded slot. Air and shape misses resolve to <c>_missingSlot</c>.</summary>
+    private static (int Layer, int Class)[] _primary = FrozenPrimary();
 
     /// <summary>The `missing` key's primary slot; what Air and shape misses resolve to.</summary>
-    private static int _missingLayer = Missing;
+    private static (int Layer, int Class) _missingSlot = (Missing, 0);
 
     /// <summary>Override keys the last pack declared. A provided-but-bad override still counts:
     /// only these claim their (Block,Face) cell, while the other override cells keep owning
@@ -109,12 +141,38 @@ public static class TexPack
     /// frozen/procedural layout.</summary>
     private static bool[] _provided = new bool[LayerCount];
 
+    /// <summary>Size-class warnings of the last <see cref="Load"/>, also pushed to stderr.
+    /// E12/E13 assert the exact wording here; the other warnings keep their Phase-1 call sites.</summary>
+    private static readonly List<string> _warnings = new();
+    public static IReadOnlyList<string> Warnings => _warnings;
+
+    private static void Warn(string message)
+    {
+        _warnings.Add(message);
+        GD.PushWarning(message);
+    }
+
     /// <summary>The pre-variants single-slot layout: base key k owns layer k, override cells absent.</summary>
     private static int[][] FrozenSlots()
     {
         var slots = new int[LayerCount][];
         for (int k = 0; k < KeyCount; k++) slots[k] = new[] { k };
         return slots;
+    }
+
+    /// <summary>Frozen routing table: every base key is one class-0 slot on its own layer.</summary>
+    private static (int Layer, int Class)[][] EmptySlots()
+    {
+        var slots = new (int Layer, int Class)[LayerCount][];
+        for (int k = 0; k < KeyCount; k++) slots[k] = new[] { (k, 0) };
+        return slots;
+    }
+
+    private static (int Layer, int Class)[] FrozenPrimary()
+    {
+        var primary = new (int Layer, int Class)[LayerCount];
+        for (int k = 0; k < KeyCount; k++) primary[k] = (k, 0);
+        return primary;
     }
 
     /// <summary>
@@ -156,32 +214,37 @@ public static class TexPack
     public static int TileIndex(Block b, int face)
     {
         int cell = Cell(b, face);
-        return cell < 0 ? _missingLayer : _resolved[cell];
+        return cell < 0 ? _missingSlot.Layer : _resolved[cell];
     }
 
-    /// <summary>Position-selected tile layer: the primary when the key has one variant, else
-    /// <c>Mix(worldX, worldY, worldZ, localFace) % validCount</c> — absolute world coordinates
-    /// and the block's LOCAL face (design §3).</summary>
-    public static int TileIndex(Block b, int face, int wx, int wy, int wz)
+    /// <summary>Position-selected tile as <c>(layer, class)</c>: the primary when the key has
+    /// one valid slot, else <c>Mix(worldX, worldY, worldZ, localFace) % validCount</c> — absolute
+    /// world coordinates and the block's LOCAL face (design §3). The class rides in the same
+    /// precomputed table, so the mesher writes <c>UV2 = (layer, class)</c> with no added
+    /// arithmetic (design P2.2).</summary>
+    public static (int Layer, int Class) TileAt(Block b, int face, int wx, int wy, int wz)
     {
         int cell = Cell(b, face);
-        if (cell < 0) return _missingLayer;
-        int[] valid = _validLayers[LayerKey(cell)];
-        if (valid == null || valid.Length == 0) return _resolved[cell];
+        if (cell < 0) return _missingSlot;
+        int key = LayerKey(cell);
+        var valid = _validSlots[key];
+        if (valid == null || valid.Length == 0) return _primary[key];
         return valid[(int)(Mix(wx, wy, wz, face) % (uint)valid.Length)];
     }
 
-    /// <summary>The slot layers of one (Block,Face) key, primary first, length >= 1 (design §2).
+    /// <summary>The class-0 slot layers of one (Block,Face) key, primary first (design §2).
     /// Do not mutate: the returned array is the loader's own table.</summary>
     public static int[] LayersFor(Block b, int face)
     {
         int cell = Cell(b, face);
-        return cell < 0 ? new[] { _missingLayer } : _keyLayers[LayerKey(cell)];
+        return cell < 0 ? new[] { _missingSlot.Layer } : _keyLayers[LayerKey(cell)];
     }
 
-    /// <summary>Runs discovery and prints the one success line. Never returns null.</summary>
+    /// <summary>Runs discovery and prints the success line, plus the overrides/variants/VRAM
+    /// lines when they apply. Never returns null.</summary>
     public static Pack Load(string cliPack)
     {
+        _warnings.Clear();
         Pack pack = null;
         if (!string.IsNullOrWhiteSpace(cliPack)) pack = TryPack(cliPack.Trim());
         if (pack == null) pack = TrySelected();
@@ -193,6 +256,8 @@ public static class TexPack
             GD.Print($"texpack: {pack.Source}: {pack.FaceOverrides}/{FaceKeys.Length} per-face overrides");
         if (pack.VariantKeys > 0)
             GD.Print($"texpack: {pack.Source}: {pack.Layers} layers, {pack.VariantKeys} keys with variants (cap {MaxVariants})");
+        if (pack.Classes > 1)
+            GD.Print(pack.VramLine);
         return pack;
     }
 
@@ -386,7 +451,8 @@ public static class TexPack
 
         // Decode each declared variant. A failed variant keeps its slot as the pack's `missing`
         // image (or its procedural colour when there is no `missing`), so the key's other
-        // variants survive (design §4).
+        // variants survive (design §4). The size class is inferred from each PNG's own square
+        // edge (design P2.1): non-square art has no inferable size and degrades to class 0.
         var decoded = new Image[LayerCount][];
         for (int k = 0; k < LayerCount; k++)
         {
@@ -404,97 +470,201 @@ public static class TexPack
                     GD.PushWarning($"texpack: {root}: tile {label}: '{raws[i]}' escapes the pack root — using 'missing'");
                     continue;
                 }
-                images[i] = ReadTile(path, raws[i], root, label, tileSize);
+                var image = ReadTile(path, raws[i], root, label);
+                if (image == null) continue;
+                if (image.GetWidth() != image.GetHeight())
+                {
+                    Warn($"texpack: {root}: tile {label}: {image.GetWidth()}x{image.GetHeight()} is not square — using 'missing'");
+                    continue;
+                }
+                images[i] = image;
             }
             decoded[k] = images;
         }
 
-        // Frozen key order, base keys first: each enumerated key contributes max(1, declared)
-        // consecutive slots, one per declared variant; a key with no decodable variant degrades
-        // to exactly one slot (today's bad-tile row, design §2/§4). Override cells are only
-        // enumerated when the manifest supplies at least one override key.
-        var keyLayers = new int[LayerCount][];
-        var validLayers = new int[LayerCount][];
-        int total = 0, resolved = 0, variantKeys = 0;
+        // Size classes (design P2.1). Class 0 is the baseline: the tile_size class when any
+        // slot has that size, else the first square size in frozen key order. The other classes
+        // get 1..C-1 in first-appearance order. `ordered` keeps every distinct size so an
+        // over-cap slot can name the class it would have had; `classSizes` is the capped list.
+        var distinct = new List<int>();
+        for (int k = 0; k < LayerCount; k++)
+        {
+            if (k >= KeyCount && faceOverrides == 0) continue;
+            var images = decoded[k];
+            if (images == null) continue;
+            foreach (var image in images)
+                if (image != null && !distinct.Contains(image.GetWidth())) distinct.Add(image.GetWidth());
+        }
+        int baseline = distinct.Contains(tileSize) ? tileSize : distinct.Count > 0 ? distinct[0] : tileSize;
+        var ordered = new List<int> { baseline };
+        foreach (int size in distinct)
+            if (size != baseline) ordered.Add(size);
+        int classCount = Math.Min(ordered.Count, MaxSizeClasses);
+        var classSizes = new int[classCount];
+        for (int c = 0; c < classCount; c++) classSizes[c] = ordered[c];
+
+        // Assign every declared variant to a class; a failed or over-cap variant joins class 0
+        // as a degraded slot. A key with zero usable variants collapses to exactly one degraded
+        // class-0 slot (today's bad-tile row, design §4).
+        var slotClass = new int[LayerCount][];
+        var slotValid = new bool[LayerCount][];
+        var slotLayer = new int[LayerCount][];
         for (int k = 0; k < LayerCount; k++)
         {
             if (k >= KeyCount && faceOverrides == 0) continue;
             var images = decoded[k];
             int n = images?.Length ?? 0;
-            int valid = 0;
+            int usable = 0;
             if (images != null)
                 foreach (var image in images)
-                    if (image != null) valid++;
-            if (valid >= 2) variantKeys++;
-            if (k < KeyCount && valid > 0) resolved++;
-            int slots = valid == 0 ? 1 : n;
-            var layers = new int[slots];
-            var selectable = new int[valid];
-            int next = 0;
-            for (int j = 0; j < slots; j++)
+                    if (image != null) usable++;
+            if (usable == 0)
             {
-                layers[j] = total + j;
-                if (images != null && j < n && images[j] != null) selectable[next++] = total + j;
+                slotClass[k] = new[] { 0 };
+                slotValid[k] = new[] { false };
+                slotLayer[k] = new int[1];
+                continue;
             }
-            keyLayers[k] = layers;
-            validLayers[k] = selectable;
-            total += slots;
+            var classes = new int[n];
+            var valid = new bool[n];
+            for (int j = 0; j < n; j++)
+            {
+                if (images[j] == null) continue;
+                int c = Array.IndexOf(classSizes, images[j].GetWidth());
+                if (c >= 0)
+                {
+                    classes[j] = c;
+                    valid[j] = true;
+                    continue;
+                }
+                string label = n > 1 ? $"'{KeyName(k)}'[{j + 1}/{n}]" : $"'{KeyName(k)}'";
+                Warn($"texpack: {root}: tile {label}: size {images[j].GetWidth()} would be class {ordered.IndexOf(images[j].GetWidth()) + 1} of {MaxSizeClasses} — using 'missing'");
+            }
+            slotClass[k] = classes;
+            slotValid[k] = valid;
+            slotLayer[k] = new int[n];
+        }
+
+        // Per-class arrays, numbered independently (design P2.1): frozen key order inside each
+        // class, each key's class slots consecutive. A key whose variants span classes has
+        // slots in several arrays.
+        var classLayers = new int[classCount];
+        for (int c = 0; c < classCount; c++)
+        {
+            int total = 0;
+            for (int k = 0; k < LayerCount; k++)
+            {
+                if (slotClass[k] == null) continue;
+                for (int j = 0; j < slotClass[k].Length; j++)
+                    if (slotClass[k][j] == c) slotLayer[k][j] = total++;
+            }
+            classLayers[c] = total;
         }
 
         // One fixed global fallback: the `missing` key's first decodable variant. Never
         // position-selected; procedural colours only when even `missing` did not decode.
+        // A degraded slot in class C gets that image resized nearest to C's edge (P2.4).
         Image fallback = null;
         if (decoded[Missing] != null)
             foreach (var image in decoded[Missing])
                 if (image != null) { fallback = image; break; }
 
-        var packed = new Image[total];
-        var sources = new TileSource[total];
-        for (int k = 0; k < LayerCount; k++)
+        var arrays = new Texture2DArray[classCount];
+        var classSources = new TileSource[classCount][];
+        int totalLayers = 0;
+        for (int c = 0; c < classCount; c++)
         {
-            if (keyLayers[k] == null) continue;
-            var images = decoded[k];
-            int n = images?.Length ?? 0;
-            for (int j = 0; j < keyLayers[k].Length; j++)
+            var packed = new Image[classLayers[c]];
+            var sources = new TileSource[classLayers[c]];
+            for (int k = 0; k < LayerCount; k++)
             {
-                int layer = keyLayers[k][j];
-                if (images != null && j < n && images[j] != null)
+                if (slotClass[k] == null) continue;
+                for (int j = 0; j < slotClass[k].Length; j++)
                 {
-                    packed[layer] = images[j];
-                    sources[layer] = TileSource.Png;
-                    continue;
+                    if (slotClass[k][j] != c) continue;
+                    int layer = slotLayer[k][j];
+                    if (slotValid[k][j] && decoded[k][j] != null)
+                    {
+                        packed[layer] = decoded[k][j];
+                        sources[layer] = TileSource.Png;
+                        continue;
+                    }
+                    packed[layer] = fallback == null ? ProceduralTile(k, classSizes[c]) : Fit(fallback, classSizes[c]);
+                    sources[layer] = fallback != null ? TileSource.Missing : TileSource.Procedural;
                 }
-                packed[layer] = fallback ?? ProceduralTile(k, tileSize);
-                sources[layer] = fallback != null ? TileSource.Missing : TileSource.Procedural;
             }
+
+            var list = new Godot.Collections.Array<Image>();
+            for (int i = 0; i < packed.Length; i++) list.Add(packed[i]);
+            var array = new Texture2DArray();
+            Error err = array.CreateFromImages(list);
+            if (err != Error.Ok || array.GetLayers() == 0)
+            {
+                GD.PushWarning($"texpack: {root}: texture array build failed — using procedural tiles");
+                return Procedural();
+            }
+            arrays[c] = array;
+            classSources[c] = sources;
+            totalLayers += packed.Length;
         }
 
-        var list = new Godot.Collections.Array<Image>();
-        for (int i = 0; i < total; i++) list.Add(packed[i]);
-        var array = new Texture2DArray();
-        Error err = array.CreateFromImages(list);
-        if (err != Error.Ok || array.GetLayers() == 0)
+        // Per-key routing tables: the class-0 slot list (LayersFor / frozen assertions), the
+        // decodable (layer, class) pairs the hash indexes, and the primary slot per key.
+        var primary = new (int Layer, int Class)[LayerCount];
+        var keyLayers = new int[LayerCount][];
+        var validSlots = new (int Layer, int Class)[LayerCount][];
+        int resolved = 0, variantKeys = 0;
+        for (int k = 0; k < LayerCount; k++)
         {
-            GD.PushWarning($"texpack: {root}: texture array build failed — using procedural tiles");
-            return Procedural();
+            if (slotClass[k] == null) continue;
+            primary[k] = (slotLayer[k][0], slotClass[k][0]);
+            var zero = new List<int>();
+            var valid = new List<(int, int)>();
+            for (int j = 0; j < slotClass[k].Length; j++)
+            {
+                if (slotClass[k][j] == 0) zero.Add(slotLayer[k][j]);
+                if (slotValid[k][j]) valid.Add((slotLayer[k][j], slotClass[k][j]));
+            }
+            keyLayers[k] = zero.ToArray();
+            validSlots[k] = valid.ToArray();
+            if (valid.Count >= 2) variantKeys++;
+            if (k < KeyCount && valid.Count > 0) resolved++;
         }
 
         // The 48-cell table is the frozen base mapping; only a declared override claims its cell.
         // Undeclared override cells still own their fixed slots but resolve to the base key.
         var table = new int[Frozen.Length];
         for (int c = 0; c < table.Length; c++)
-            table[c] = keyLayers[provided[KeyCount + c] ? KeyCount + c : Frozen[c]][0];
+            table[c] = primary[provided[KeyCount + c] ? KeyCount + c : Frozen[c]].Layer;
 
         _resolved = table;
         _keyLayers = keyLayers;
-        _validLayers = validLayers;
-        _missingLayer = keyLayers[Missing][0];
+        _validSlots = validSlots;
+        _primary = primary;
+        _missingSlot = primary[Missing];
         _provided = provided;
+
+        // VRAM report (design P2.4): printed only for mixed packs, RGBA8 = 4 B/texel.
+        string vramLine = null;
+        if (classCount > 1)
+        {
+            var parts = new List<string>(classCount);
+            long bytesTotal = 0;
+            for (int c = 0; c < classCount; c++)
+            {
+                long bytes = (long)classSizes[c] * classSizes[c] * 4 * classLayers[c];
+                bytesTotal += bytes;
+                parts.Add($"{classSizes[c]}x{classSizes[c]}: {classLayers[c]} {(classLayers[c] == 1 ? "layer" : "layers")} ({bytes / 1024.0:0.###} KiB)");
+            }
+            vramLine = $"texpack: {root}: {classCount} size classes — {string.Join(", ", parts)}, total {bytesTotal / 1024.0:0.###} KiB";
+        }
 
         return new Pack
         {
-            Array = array, TileSize = tileSize, Name = name, Source = root, Resolved = resolved,
-            FaceOverrides = faceOverrides, Sources = sources, Layers = total,
+            Array = arrays[0], Arrays = arrays, Classes = classCount, ClassSizes = classSizes,
+            ClassLayers = classLayers, VramLine = vramLine,
+            TileSize = tileSize, Name = name, Source = root, Resolved = resolved,
+            FaceOverrides = faceOverrides, Sources = classSources[0], Layers = totalLayers,
             VariantKeys = variantKeys, KeyLayers = keyLayers,
         };
     }
@@ -503,8 +673,9 @@ public static class TexPack
     {
         _resolved = Frozen;
         _keyLayers = FrozenSlots();
-        _validLayers = _keyLayers;
-        _missingLayer = Missing;
+        _validSlots = EmptySlots();
+        _primary = FrozenPrimary();
+        _missingSlot = (Missing, 0);
         _provided = new bool[LayerCount];
         var list = new Godot.Collections.Array<Image>();
         var sources = new TileSource[KeyCount];
@@ -520,6 +691,10 @@ public static class TexPack
         return new Pack
         {
             Array = array,
+            Arrays = new[] { array },
+            Classes = 1,
+            ClassSizes = new[] { DefaultTileSize },
+            ClassLayers = new[] { KeyCount },
             TileSize = DefaultTileSize,
             Name = "procedural",
             Source = "built-in",
@@ -533,7 +708,7 @@ public static class TexPack
 
     // ---- tile reading ----------------------------------------------------
 
-    private static Image ReadTile(string path, string raw, string root, string label, int size)
+    private static Image ReadTile(string path, string raw, string root, string label)
     {
         Image image;
         if (path.StartsWith("res://"))
@@ -563,16 +738,20 @@ public static class TexPack
             }
         }
 
-        if (image.GetWidth() != size || image.GetHeight() != size)
-        {
-            GD.PushWarning($"texpack: {root}: tile {label}: {image.GetWidth()}x{image.GetHeight()} does not match tile_size {size} — using 'missing'");
-            return null;
-        }
-
         // Array layers must share width, height, format and mipmaps: a PNG's own format
-        // varies (opaque RGB next to RGBA leaves), so every tile lands on Rgba8.
+        // varies (opaque RGB next to RGBA leaves), so every tile lands on Rgba8. Size itself
+        // is the caller's business: a square PNG that is not `tile_size` is its own class.
         image.Convert(Image.Format.Rgba8);
         return image;
+    }
+
+    /// <summary>`missing` at class C's edge: nearest-neighbour resize, never a cross-size copy.</summary>
+    private static Image Fit(Image missing, int edge)
+    {
+        if (missing.GetWidth() == edge) return missing;
+        var copy = (Image)missing.Duplicate();
+        copy.Resize(edge, edge, Image.Interpolation.Nearest);
+        return copy;
     }
 
     private static Image ProceduralTile(int index, int size)

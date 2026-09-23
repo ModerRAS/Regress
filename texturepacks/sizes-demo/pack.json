@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "name": "Sizes Demo",
+  "tile_size": 16,
+  "tiles": {
+    "stone": "tiles/stone.png",
+    "dirt": "tiles/dirt.png",
+    "grass_top": "tiles/grass_top.png",
+    "grass_side": "tiles/grass_side.png",
+    "grass_bottom": "tiles/grass_bottom.png",
+    "sand": "tiles/sand.png",
+    "wood_side": "tiles/wood_side.png",
+    "wood_top": "tiles/wood_top.png",
+    "plank": "tiles/plank.png",
+    "leaves": "tiles/leaves.png",
+    "bedrock": "tiles/bedrock.png",
+    "missing": "tiles/missing.png"
+  }
+}

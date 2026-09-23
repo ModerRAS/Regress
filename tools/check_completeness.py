@@ -16,12 +16,14 @@ out of src/TexPack.cs, and the mapping table out of docs/texture-packs.md, and a
       order, the same Renderable and FaceSuffix order, LayerCount as KeyCount +
       FaceKeys.Length, and the same 48 ints in its Frozen fallback table
 
-(g)/(h) together pin the **no-variant baseline layout and the frozen key order**: base key k ->
-layer k, override cell c -> layer 12 + c, and LayerCount = KeyCount + FaceKeys.Length as the
-baseline slot space. They do NOT constrain the absolute layer numbers of a variant pack: a key
-that declares variants occupies max(1, valid variants) consecutive layers, so every later key
-shifts and `12 + cell` is the baseline only. Nothing here may assume a fixed layer number for a
-manifest that declares variants.
+(g)/(h) together pin the **no-variant, no-class baseline layout and the frozen key order**: base
+key k -> layer k, override cell c -> layer 12 + c, and LayerCount = KeyCount + FaceKeys.Length
+(KeyCount stays 12) as the baseline slot space — the anchor Phase 2's size classes do not change;
+a class array's own layer count lives elsewhere (Pack.Layers / per-class counts), never in
+LayerCount. They do NOT constrain the absolute layer numbers of a variant or mixed-size pack: a
+key that declares variants occupies max(1, valid variants) consecutive layers within its class
+array, so every later key shifts and `12 + cell` is the baseline only. Nothing here may assume a
+fixed layer number for a manifest that declares variants or size classes.
 
 Python 3 stdlib only.  Exit 0 = exhaustive; non-zero + message on stderr otherwise.
 
@@ -210,7 +212,8 @@ def main():
     renderable = [b for b in blocks if b != "Air"]
 
     # (h) src/TexPack.cs is the append-only proof: base keys 0..11, overrides 12+cell —
-    # the no-variant baseline + frozen key order, not variant-pack absolute layers.
+    # the no-variant, no-class baseline + frozen key order, not variant-pack or size-class
+    # absolute layers (LayerCount = KeyCount + FaceKeys.Length stays the baseline anchor).
     check(tex["key_count"] == OVERRIDE_LAYER_BASE,
           f"TEXPACK KeyCount: TexPack.cs says {tex['key_count']}, frozen base count is "
           f"{OVERRIDE_LAYER_BASE}")
