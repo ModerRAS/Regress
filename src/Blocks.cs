@@ -14,6 +14,7 @@ public enum Block : byte
 	Leaves,
 	Bedrock,
 	Chest,
+	Pumpkin,
 }
 
 // Face indices, in the order used by ChunkMesher.Dirs.
@@ -39,7 +40,7 @@ public static class Blocks
 	public static readonly Block[] Palette =
 	{
 		Block.Stone, Block.Dirt, Block.Grass, Block.Sand, Block.Wood, Block.Plank, Block.Leaves,
-		Block.Chest,
+		Block.Chest, Block.Pumpkin,
 	};
 
 	public static bool IsSolid(Block b) => b != Block.Air;
@@ -57,6 +58,7 @@ public static class Blocks
 		0.2f,  // Leaves
 		-1f,   // Bedrock
 		2.0f,  // Chest
+		1.0f,  // Pumpkin
 	};
 
 	public static float HardnessOf(Block b) => Hardness[(int)b];
@@ -79,6 +81,7 @@ public static class Blocks
 		Placement.None, // Leaves
 		Placement.None, // Bedrock
 		Placement.Face, // Chest
+		Placement.Face, // Pumpkin: a carved front
 	};
 
 	/// <summary>Allowed-orientation policy per block, indexed by (int)Block. Upright is used by
@@ -95,6 +98,7 @@ public static class Blocks
 		OrientationPolicy.Any,     // Leaves
 		OrientationPolicy.Any,     // Bedrock
 		OrientationPolicy.Upright, // Chest
+		OrientationPolicy.Upright, // Pumpkin
 	};
 
 	// A policy is stored twice on purpose. The semantic mask has one bit per byte value 0..24

@@ -16,7 +16,7 @@ public static class TexPack
 	public const int KeyCount = 12;
 	public const int DefaultTileSize = 16;
 
-	/// <summary>Most variants one key may declare (design §5). 66 keys x 16 = 1056 layers ceiling.</summary>
+	/// <summary>Most variants one key may declare (design §5). 72 keys x 16 = 1152 layers ceiling.</summary>
 	public const int MaxVariants = 16;
 
 	/// <summary>Most size classes one pack may use (design P2.1). A 5th distinct size degrades
@@ -32,9 +32,9 @@ public static class TexPack
 
 	private const int Missing = 11;
 
-	/// <summary>The nine renderable blocks in cell order; cell index = block*6 + face.</summary>
+	/// <summary>The ten renderable blocks in cell order; cell index = block*6 + face.</summary>
 	public static readonly Block[] Renderable =
-		{ Block.Stone, Block.Dirt, Block.Grass, Block.Sand, Block.Wood, Block.Plank, Block.Leaves, Block.Bedrock, Block.Chest };
+		{ Block.Stone, Block.Dirt, Block.Grass, Block.Sand, Block.Wood, Block.Plank, Block.Leaves, Block.Bedrock, Block.Chest, Block.Pumpkin };
 
 	/// <summary>Face-constant suffixes in Face index order (PosX=0 … NegZ=5).</summary>
 	public static readonly string[] FaceSuffix = { "posx", "negx", "top", "bottom", "posz", "negz" };
@@ -42,7 +42,7 @@ public static class TexPack
 	/// <summary>Optional per-face override keys; layer = KeyCount + cell.</summary>
 	public static readonly string[] FaceKeys = BuildFaceKeys();
 
-	/// <summary>Array layers the loader may need: 12 base + 54 optional per-face slots.
+	/// <summary>Array layers the loader may need: 12 base + 60 optional per-face slots.
 	/// This stays the frozen no-variant baseline slot space; a variant or mixed-size pack's
 	/// arrays are <see cref="Pack.Layers"/> / <see cref="Pack.ClassLayers"/> layers, computed
 	/// by the uniform slot rule (design §2) inside each size class (design P2.1).</summary>
@@ -103,7 +103,7 @@ public static class TexPack
 	}
 
 	/// <summary>
-	/// docs/texture-packs.md's 54-cell fallback map, over the <see cref="Block"/> enum — never
+	/// docs/texture-packs.md's 60-cell fallback map, over the <see cref="Block"/> enum — never
 	/// over <c>Blocks.Palette</c>, which omits Bedrock even though bedrock is meshed. Never
 	/// renumbered.
 	/// </summary>
@@ -118,6 +118,9 @@ public static class TexPack
 		10, 10, 10, 10, 10, 10,  // Bedrock
 		// Chest (ordinal 8): frozen fallback is plank; its art ships as the six chest_* overrides.
 		8, 8, 8, 8, 8, 8,
+		// Pumpkin (ordinal 9): frozen fallback is sand (5) — the warmest/lightest of the 12 keys,
+		// closest in hue to pumpkin orange; its art ships as the six pumpkin_* overrides.
+		5, 5, 5, 5, 5, 5,
 	};
 
 	/// <summary>The last accepted pack's resolution; the frozen fallback until one loads.</summary>
@@ -139,7 +142,7 @@ public static class TexPack
 
 	/// <summary>Override keys the last pack declared. A provided-but-bad override still counts:
 	/// only these claim their (Block,Face) cell, while the other override cells keep owning
-	/// their slots (fixed 66-layer space) but show the frozen base mapping. All false for the
+	/// their slots (fixed 72-layer space) but show the frozen base mapping. All false for the
 	/// frozen/procedural layout.</summary>
 	private static bool[] _provided = new bool[LayerCount];
 
@@ -203,12 +206,12 @@ public static class TexPack
 		return -1;
 	}
 
-	/// <summary>Key index for a 54-cell cell: the override cell when the pack declares it,
+	/// <summary>Key index for a 60-cell cell: the override cell when the pack declares it,
 	/// else the frozen base key.</summary>
 	private static int LayerKey(int cell) =>
 		_provided[KeyCount + cell] ? KeyCount + cell : Frozen[cell];
 
-	/// <summary>Key name for warnings — base keys first, then the 54 override keys.</summary>
+	/// <summary>Key name for warnings — base keys first, then the 60 override keys.</summary>
 	private static string KeyName(int key) => key < KeyCount ? Keys[key] : FaceKeys[key - KeyCount];
 
 	/// <summary>Frozen Block+Face -> primary tile layer (variant 0). Per face: exact override,
@@ -633,7 +636,7 @@ public static class TexPack
 			if (k < KeyCount && valid.Count > 0) resolved++;
 		}
 
-		// The 54-cell table is the frozen base mapping; only a declared override claims its cell.
+		// The 60-cell table is the frozen base mapping; only a declared override claims its cell.
 		// Undeclared override cells still own their fixed slots but resolve to the base key.
 		var table = new int[Frozen.Length];
 		for (int c = 0; c < table.Length; c++)

@@ -17,6 +17,8 @@ stone, dirt, grass_top, grass_side, grass_bottom, sand, wood_side, wood_top, pla
 bedrock, missing.
 Chest overrides (Phase B) == vocabulary cells 48..53 -> no-variant baseline layer 60..65:
 chest_posx, chest_negx, chest_top, chest_bottom, chest_posz, chest_negz.
+Pumpkin overrides (Phase C) == vocabulary cells 54..59 -> no-variant baseline layer 66..71:
+pumpkin_posx, pumpkin_negx, pumpkin_top, pumpkin_bottom, pumpkin_posz, pumpkin_negz.
 """
 
 import argparse
@@ -39,6 +41,7 @@ KEY_ORDER = [
 # Append-only slots; the base rows above stay frozen.
 OVERRIDE_KEYS = [
     "chest_posx", "chest_negx", "chest_top", "chest_bottom", "chest_posz", "chest_negz",
+    "pumpkin_posx", "pumpkin_negx", "pumpkin_top", "pumpkin_bottom", "pumpkin_posz", "pumpkin_negz",
 ]
 ALL_KEYS = KEY_ORDER + OVERRIDE_KEYS
 SIZE = 16
@@ -413,6 +416,95 @@ def tile_chest_bottom():
     return px
 
 
+# ---------------------------------------------------------------- the six pumpkin overrides
+
+PUMPKIN_FLESH = (219, 112, 26)   # sRGB ~0.86/0.44/0.10
+PUMPKIN_SHADE = (148, 69, 13)    # sRGB ~0.58/0.27/0.05: rib seams
+PUMPKIN_CARVE = (41, 18, 5)      # sRGB ~0.16/0.07/0.02: carved features
+PUMPKIN_STEM = (89, 115, 31)     # sRGB ~0.35/0.45/0.12
+
+
+def _pumpkin_ribs(px, seed):
+    """Orange rind with vertical rib shading, reseeded per face. Rib seams sit at x=2 and x=9,
+    clear of the carved-face signature columns (3..5, 7..8, 10..12); every tone stays >= 0.63x
+    flesh, so no pixel of a ribbed face is ever dark."""
+    for y in range(SIZE):
+        for x in range(SIZE):
+            d = min((x - 2) % SIZE, (2 - x) % SIZE, (x - 9) % SIZE, (9 - x) % SIZE)
+            f = 0.78 + 0.10 * min(d, 3)
+            if d == 0:
+                f *= 0.88                       # rib seam shadow
+            n = spread(0.6 * pnoise(x, y, 4, 4, seed) + 0.4 * pnoise(x, y, 8, 8, seed + 1), 1.6)
+            f *= 0.92 + 0.16 * n
+            px[y][x] = mul(PUMPKIN_FLESH, f) + (255,)
+
+
+def tile_pumpkin_posz():
+    """Carved face (local +Z, player-facing): ribbed rind, dark eye patches at rows 5..6 cols
+    3..5 and 10..12, the bridge cells (rows 5..6, cols 7..8) left bright orange, and a dark
+    mouth block rows 10..12 cols 5..10 with jagged teeth rows 9/13 outside the signature."""
+    px = grid()
+    _pumpkin_ribs(px, 1701)
+    for y in (5, 6):
+        for x in list(range(3, 6)) + list(range(10, 13)):
+            px[y][x] = PUMPKIN_CARVE + (255,)
+    px[4][4] = px[4][11] = PUMPKIN_CARVE + (255,)          # jagged eye tops
+    for y in (5, 6):
+        for x in (7, 8):
+            px[y][x] = mul(PUMPKIN_FLESH, 1.04) + (255,)   # lit bridge between the eyes
+    for y in (10, 11, 12):
+        for x in range(5, 11):
+            px[y][x] = PUMPKIN_CARVE + (255,)
+    for x in (5, 7, 9):
+        px[9][x] = PUMPKIN_CARVE + (255,)                  # jagged upper teeth
+    for x in (6, 8, 10):
+        px[13][x] = PUMPKIN_CARVE + (255,)                 # jagged lower teeth
+    return px
+
+
+def tile_pumpkin_negz():
+    """Back face: ribbed rind only, no carved features."""
+    px = grid()
+    _pumpkin_ribs(px, 1801)
+    return px
+
+
+def tile_pumpkin_posx():
+    """Right side: ribbed rind, reseeded, no carved features."""
+    px = grid()
+    _pumpkin_ribs(px, 1901)
+    return px
+
+
+def tile_pumpkin_negx():
+    """Left side: ribbed rind, reseeded again, no carved features."""
+    px = grid()
+    _pumpkin_ribs(px, 2001)
+    return px
+
+
+def tile_pumpkin_top():
+    """Flesh seen from above with a small off-centre stem."""
+    px = grid()
+    _pumpkin_ribs(px, 2101)
+    for y in range(2, 6):
+        for x in range(9, 12):
+            if (y, x) in ((2, 9), (2, 11), (5, 9), (5, 11)):
+                continue                       # rounded stem corners
+            px[y][x] = mul(PUMPKIN_STEM, 0.82 + 0.36 * rnd(x, y, 2103)) + (255,)
+    return px
+
+
+def tile_pumpkin_bottom():
+    """Plain ribbed underside, slightly darkened (mirrors `chest_bottom`)."""
+    px = grid()
+    _pumpkin_ribs(px, 2201)
+    for y in range(SIZE):
+        for x in range(SIZE):
+            px[y][x] = mul(px[y][x][:3], 0.88) + (255,)
+    return px
+
+
 TILES = {
     "stone": tile_stone,
     "dirt": tile_dirt,
@@ -432,6 +524,12 @@ TILES = {
     "chest_bottom": tile_chest_bottom,
     "chest_posz": tile_chest_posz,
     "chest_negz": tile_chest_negz,
+    "pumpkin_posx": tile_pumpkin_posx,
+    "pumpkin_negx": tile_pumpkin_negx,
+    "pumpkin_top": tile_pumpkin_top,
+    "pumpkin_bottom": tile_pumpkin_bottom,
+    "pumpkin_posz": tile_pumpkin_posz,
+    "pumpkin_negz": tile_pumpkin_negz,
 }
 
 
@@ -520,6 +618,23 @@ def _latch_motif(rows):
             and all(dark(rows[y][x]) for y, x in ((7, 7), (7, 8))))
 
 
+def _pumpkin_face_motif(rows):
+    """Carved-face pixel signature, coordinates not average colour: all six left-eye cells
+    (rows 5..6, cols 3..5) and all six right-eye cells (rows 5..6, cols 10..12) dark, the four
+    bridge cells (rows 5..6, cols 7..8) bright orange, and every mouth cell (rows 10..12,
+    cols 5..10) dark. Ribbed sides must fail at least one of these cells."""
+    def dark(px):
+        return px[0] <= 90 and px[1] <= 90 and px[2] <= 90
+
+    def bright(px):
+        return px[0] >= 150 and 50 <= px[1] <= 170 and px[2] <= 100
+
+    return (all(dark(rows[y][x]) for y in (5, 6) for x in (3, 4, 5))
+            and all(dark(rows[y][x]) for y in (5, 6) for x in (10, 11, 12))
+            and all(bright(rows[y][x]) for y in (5, 6) for x in (7, 8))
+            and all(dark(rows[y][x]) for y in (10, 11, 12) for x in range(5, 11)))
+
+
 def do_verify():
     ok = True
     # The latch belongs to the player-facing face only (local +Z == chest_posz).
@@ -565,6 +680,24 @@ def do_verify():
         ok = False
     else:
         print("chest latch motif: ok (chest_posz present, other five absent)")
+    # The carved face belongs to the player-facing face only (local +Z == pumpkin_posz).
+    pumpkin_want = {"pumpkin_posz": True, "pumpkin_negz": False, "pumpkin_posx": False,
+                    "pumpkin_negx": False, "pumpkin_top": False, "pumpkin_bottom": False}
+    pumpkin_bad = []
+    for key, want in pumpkin_want.items():
+        try:
+            motif = _pumpkin_face_motif(read_png(tile_path(key))["rows"])
+        except Exception:
+            pumpkin_bad.append(key[len("pumpkin_"):] + " missing")
+            continue
+        if motif != want:
+            pumpkin_bad.append("%s %s" % (key[len("pumpkin_"):],
+                                          "missing" if want else "present"))
+    if pumpkin_bad:
+        print("FAIL pumpkin face motif: " + " / ".join(pumpkin_bad))
+        ok = False
+    else:
+        print("pumpkin face motif: ok (pumpkin_posz present, other five absent)")
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

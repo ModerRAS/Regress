@@ -2,8 +2,8 @@
 
 The block vocabulary is **append-only**: existing `Block` values, the 12 canonical tile keys and
 the front of `Frozen` never move. Adding a block is "one line of policy + six images", plus the
-append-only rows and the derived counts that follow. Chest is the worked example (Phase B);
-Pumpkin is the next one.
+append-only rows and the derived counts that follow. Chest (Phase B) and Pumpkin (Phase C) are
+both worked examples.
 
 ## The two traps Phase B paid for
 
@@ -67,12 +67,12 @@ the resolved layers (`12 + c`).
 
 ## Derived counts (keep them honest)
 
-| quantity | formula | Chest (now) | next block |
+| quantity | formula | Pumpkin (now) | next block |
 | --- | --- | --- | --- |
-| renderable blocks | `TexPack.Renderable.Length` | 9 | 10 |
-| cells | `6 × renderable` | 54 | 60 |
-| override layers | `12 .. 12 + cells - 1` | 12..65 | 12..71 |
-| `TexPack.LayerCount` | `KeyCount + FaceKeys.Length` = `12 + cells` | 66 | 72 |
+| renderable blocks | `TexPack.Renderable.Length` | 10 | 11 |
+| cells | `6 × renderable` | 60 | 66 |
+| override layers | `12 .. 12 + cells - 1` | 12..71 | 12..77 |
+| `TexPack.LayerCount` | `KeyCount + FaceKeys.Length` = `12 + cells` | 72 | 78 |
 
 `OVERRIDE_LAYER_BASE = len(TILE_KEYS) = 12`. Adding a 13th canonical key shifts every override
 layer — that is a reorder, not an append. Never do it; pick one of the 12 keys as the fallback
@@ -97,7 +97,7 @@ layer — that is a reorder, not an append. Never do it; pick one of the 12 keys
    (`(int)Enum.GetValues<Block>()[^1]`) — keep it derived.
    ```bash
    grep -rn "new byte\[[0-9]\|new int\[[0-9]" src tools
-   grep -rn "(int)Block\.\(Bedrock\|Chest\)" src tools   # literal old-last bounds
+   grep -rn "(int)Block\.\(Bedrock\|Chest\|Pumpkin\)" src tools   # literal old-last bounds
    ```
    A `for (b = 1; b <= (int)Block.Bedrock; b++)` loop silently skips the new block's coverage.
 4. **`src/TexPack.cs`.** Append to `Renderable` (order == cell order, never reorder). Append
@@ -113,7 +113,7 @@ layer — that is a reorder, not an append. Never do it; pick one of the 12 keys
    `TileKey`/`TileIndex` = fallback, `FaceKey` = `<block>_<suffix>`. Fix every derived number:
    cell count, `LayerCount`, both `N/M per-face overrides` lines, the hostile ceiling
    (`keys × 16` layers and KiB), and VRAM numbers derived from the override count. Use the
-   formulas above (Chest: 54 / 66; next block: 60 / 72). The checker cross-checks the table
+   formulas above (Pumpkin: 60 / 72; next block: 66 / 78). The checker cross-checks the table
    against `Frozen` and `FaceKeys`.
 7. **Art.** `tools/gen_default_pack.py`: add the 6 keys to `OVERRIDE_KEYS` and 6 painters to
    `TILES`; deterministic integer hash only (`_hash`/`rnd`/`pnoise`; no time, no RNG). All modes
@@ -143,6 +143,16 @@ layer — that is a reorder, not an append. Never do it; pick one of the 12 keys
    - Front-face orientation: the `Face.PosZ` assertion from trap 1.
    - If interactive: `KindOf(block) != InteractKind.None` plus one `Interact` state flip, and
      `KindOf(old stand-in) == None` so the stand-in cannot linger.
+   - Stale-assertion sweep: the frozen literal tables and their counts are copied into several
+     checks. Pumpkin's pass touched `CheckTileIndexMap` (the `expected` int[,] row and the
+     Chest/Pumpkin `want`), `CheckFaceOverrides` (the `frozen` array and the pack-less
+     fall-through), `CheckTextureVariants` E4 (the `frozen` array and "the other 53 cells"),
+     `CheckSizeClasses` E10 (`FaceOverrides == 6`, `defPng == KeyCount + 6`), and the V-series
+     (V2 length `9`→`10` + `[9]`, V4 `54`/`66`, V5 `FaceOverrides`/`Layers`). The C-series
+     `Palette[^1]` also moves to `[^2]`. Find them before building:
+     ```bash
+     grep -n "54\|66\|FaceOverrides == 6" src/SelfTest.cs
+     ```
 10. **Interactive block.** One line in `BlockInteractions.KindOf` (plus components only if the
     block needs new state). The registry, `Sync`, audit and RMB dispatch are unchanged.
 11. **Orientation.** Front-facing → `Placement.Face` + `OrientationPolicy.Upright`. The local
@@ -157,7 +167,9 @@ layer — that is a reorder, not an append. Never do it; pick one of the 12 keys
     godot-mono --headless --path . -- --selftest  # PASS
     git diff --exit-code -- .github/workflows     # release smoke lines unchanged
     ```
-    The release smoke grep counts base keys only (`tiles=12/12`); overrides never move it.
+    The release smoke grep counts base keys only (`tiles=12/12`); overrides never move it. The
+    assertion count quoted in `README.md` and `docs/roadmap.md` is refreshed in a final pass after
+    `--selftest`, not from this recipe.
 13. **Import hygiene.** If `godot --import` leaves whitespace-only `.cs` changes, restore them
     with `git checkout --` before committing. `python tools/gen_default_pack.py --imports` strips
     the `uid=` line from tracked base `.import` files — `git checkout --` those too. Commit only
@@ -177,4 +189,20 @@ layer — that is a reorder, not an append. Never do it; pick one of the 12 keys
 | `src/SelfTest.cs` | V-series append-only/resolved/art checks, C-series interaction, C7 front-face + art nets |
 
 Result: `cells: 54 rows / 54 required`, `overrides: 54 keys, layers 12..65, LayerCount=66`,
+PASS; `dotnet build` clean; `--selftest` PASS.
+
+## Worked example: Pumpkin (Phase C)
+
+| file | change |
+| --- | --- |
+| `src/Blocks.cs` | `Pumpkin` appended after `Chest` (ordinal 9); `Hardness` 1.0; `Placement.Face`; `OrientationPolicy.Upright`; appended to `Palette` |
+| `src/TexPack.cs` | `Renderable` += `Block.Pumpkin` (ordinal 9); `Frozen` += six `5` (sand fallback, cells 54..59); six `pumpkin_*` keys in `FaceKeys` (layers 66..71) |
+| `tools/check_completeness.py` | `RENDERABLE_BLOCKS` += `Pumpkin`; `UNIFORM["Pumpkin"] = "sand"`; `EXPECTED_ROWS = 60` |
+| `docs/texture-packs.md` | 6 Pumpkin rows; counts 60 / 72; hostile ceiling 72×16 = 1152 |
+| `tools/gen_default_pack.py` | 6 `tile_pumpkin_*` painters + `OVERRIDE_KEYS` + `TILES`; motif check in `--verify` |
+| `texturepacks/default/pack.json` | 6 `pumpkin_*` entries |
+| `src/SelfTest.cs` | P1..P6: append-only ordinal, resolved 66..71 + Png sources, policy, front-face convention, not-interactive + zero registry cost; V2/V4/V5 and the shared frozen literals extended |
+| `docs/roadmap.md` | one Done line |
+
+Result: `cells: 60 rows / 60 required`, `overrides: 60 keys, layers 12..71, LayerCount=72`,
 PASS; `dotnet build` clean; `--selftest` PASS.

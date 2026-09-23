@@ -1,7 +1,7 @@
 # Texture packs
 
 A texture pack is a **directory** containing a `pack.json` manifest and the PNGs it names — no
-archive, no second manifest name, no in-engine download. Twelve base tile keys and 54 optional
+archive, no second manifest name, no in-engine download. Twelve base tile keys and 60 optional
 per-face override keys are the entire vocabulary, and their order is frozen because it fixes the
 baseline layer layout the renderer receives (variants shift layers, never key order — see
 "Texture variants").
@@ -23,7 +23,7 @@ reads a file.
   when no key declares variants). A provided override
   wins for exactly that cell; every other cell keeps the frozen base map. A pack with only the
   twelve base keys needs no changes; an override whose PNG is missing or bad falls back to `missing`
-  like any other tile. One override enumerates all 66 keys — 66 layers in the no-variant baseline,
+  like any other tile. One override enumerates all 72 keys — 72 layers in the no-variant baseline,
   more when a key declares variants (see "Texture variants").
 - Discovery: `--pack=<dir>` → `user://texturepacks/<selected.txt>` → `res://texturepacks/default`
   → procedural tiles. The first loadable pack wins; the last rung reads no files. Every run
@@ -71,7 +71,7 @@ arrays[(int)Mesh.ArrayType.TexUV2] = uv2s.ToArray();  // (layer, class): layer =
 
 ### Optional per-face overrides
 
-Fifty-four optional keys extend the base vocabulary without touching it. A key is
+Sixty optional keys extend the base vocabulary without touching it. A key is
 `<block>_<suffix>`, block in `TexPack.Renderable` order, suffix in `Face` order:
 
 | suffix | `posx` | `negx` | `top` | `bottom` | `posz` | `negz` |
@@ -79,7 +79,7 @@ Fifty-four optional keys extend the base vocabulary without touching it. A key i
 | `Face` | 0 | 1 | 2 | 3 | 4 | 5 |
 
 `cell = blockOrdinal * 6 + faceIndex`, and in the **no-variant baseline** the override's layer is
-**`12 + cell`** (12..65). `TexPack.LayerCount` is 66: the twelve base keys then the 54 override
+**`12 + cell`** (12..71). `TexPack.LayerCount` is 72: the twelve base keys then the 60 override
 slots, appended and never renumbered — the baseline slot space, not necessarily the array size
 once variants exist (see "Texture variants").
 
@@ -102,13 +102,13 @@ manifest fault: like a base key it claims its slot and the pixels become the pac
 tile. The pack is never rejected for it, and an unknown key still warns once and is ignored.
 
 Array allocation is all-or-nothing: with no override the array has today's exactly 12 layers; as
-soon as one override key is provided the array has all 66, unused slots holding the `missing`
+soon as one override key is provided the array has all 72, unused slots holding the `missing`
 tile and referenced by no cell. (Variants change the layer count, never the enumerated or
 frozen key order — see "Texture variants".) `tiles=12/12` in the success line still counts base keys only;
 the override count travels on its own line, printed once when at least one override is provided:
 
 ```
-texpack: <source>: N/54 per-face overrides
+texpack: <source>: N/60 per-face overrides
 ```
 
 ## Block orientation
@@ -118,7 +118,7 @@ array parallel to `Value` by the same index; byte `0` is identity, the default, 
 block is drawn in its authored orientation. (The three face bases normalised in this build are a
 separate, deliberate change — see Known weaknesses.) The mesher maps each world face back to the
 block's **local** face to choose the tile, then rotates the in-face UVs by the same rotation, so
-a directional glyph stays upright and is never mirrored. The tile vocabulary (12 base keys + 54
+a directional glyph stays upright and is never mirrored. The tile vocabulary (12 base keys + 60
 per-face slots), the index table and the pack format are unchanged: a pack still names per local
 face.
 
@@ -144,7 +144,7 @@ out of reach.
 
 ## Completeness: Block × Face → tile key
 
-Nine renderable `Block` enum members (Air excluded) × six faces = **54 cells**, each mapped
+Ten renderable `Block` enum members (Air excluded) × six faces = **60 cells**, each mapped
 exactly once. Enumerated from `src/Blocks.cs`, cross-checked against `ChunkMesher.Dirs`
 (`PosX=0, NegX=1, Top=2, Bottom=3, PosZ=4, NegZ=5`). `Wood.Bottom → wood_top` is a spec
 convention (log end-grain), not a fact derivable from the procedural colour table in
@@ -152,7 +152,7 @@ convention (log end-grain), not a fact derivable from the procedural colour tabl
 
 `TileKey`/`TileIndex` are the frozen **fallback** for a cell — what it samples when no override
 is provided — while `FaceKey` is the optional override for that same cell, at layer `12 + cell`.
-All 54 cells now resolve through the chain: exact override when the manifest provides it, else
+All 60 cells now resolve through the chain: exact override when the manifest provides it, else
 the fallback.
 
 | Block | FaceName | TileKey | TileIndex | FaceKey |
@@ -211,11 +211,17 @@ the fallback.
 | Chest | Bottom | `plank` | 8 | `chest_bottom` |
 | Chest | PosZ | `plank` | 8 | `chest_posz` |
 | Chest | NegZ | `plank` | 8 | `chest_negz` |
+| Pumpkin | PosX | `sand` | 5 | `pumpkin_posx` |
+| Pumpkin | NegX | `sand` | 5 | `pumpkin_negx` |
+| Pumpkin | Top | `sand` | 5 | `pumpkin_top` |
+| Pumpkin | Bottom | `sand` | 5 | `pumpkin_bottom` |
+| Pumpkin | PosZ | `sand` | 5 | `pumpkin_posz` |
+| Pumpkin | NegZ | `sand` | 5 | `pumpkin_negz` |
 
-Key → cells: `stone` 6, `dirt` 6, `grass_top` 1, `grass_side` 4, `grass_bottom` 1, `sand` 6,
+Key → cells: `stone` 6, `dirt` 6, `grass_top` 1, `grass_side` 4, `grass_bottom` 1, `sand` 12,
 `wood_side` 4, `wood_top` 2, `plank` 12, `leaves` 6, `bedrock` 6, `missing` 0
-(6+6+1+4+1+6+4+2+12+6+6 = 54). These are the fallback counts. Of the 54 `FaceKey` names in the
-table, 51 are override-only and cover exactly one cell each; the three colliding names
+(6+6+1+4+1+12+4+2+12+6+6 = 60). These are the fallback counts. Of the 60 `FaceKey` names in the
+table, 57 are override-only and cover exactly one cell each; the three colliding names
 (`grass_top`, `grass_bottom`, `wood_top`) are base-key aliases — two cover one cell each and
 `wood_top` covers two, per the alias rule in "Optional per-face overrides".
 
@@ -229,7 +235,7 @@ Numbers arrive as `double`, so numeric rules are comparisons, not type identity.
 | `version` | number, integer | **yes** | — | must equal `1`; anything else **rejects the pack** |
 | `name` | string | no | directory name | cosmetic; wrong type warns and takes the directory name |
 | `tile_size` | number, integer | **yes** | — | `>= 1`; the pack's expected/default square size and the class-0 preference — a tile PNG may ship its own square size (see "Per-tile sizes (size classes)"); missing or invalid **rejects the pack** |
-| `tiles` | object, key → string or array of strings | no | `{}` | keys from the twelve base keys or the 54 override keys; a value is one pack-relative path or a list of them (up to 16 variants, first = primary) |
+| `tiles` | object, key → string or array of strings | no | `{}` | keys from the twelve base keys or the 60 override keys; a value is one pack-relative path or a list of them (up to 16 variants, first = primary) |
 
 `tile_size` is required because it is the pack's declared default size and names the class-0
 preference; a missing or invalid value rejects the pack rather than guessing. `name` is optional
@@ -285,7 +291,7 @@ A pack that also provides override keys prints one extra line, after the success
 
 ```
 texpack: using 'Fancy' (user://texturepacks/fancy) tile_size=16 tiles=1/12
-texpack: user://texturepacks/fancy: 1/54 per-face overrides
+texpack: user://texturepacks/fancy: 1/60 per-face overrides
 ```
 
 An unsupported version is never half-loaded:
@@ -498,15 +504,15 @@ zero-diff regression baseline; a 1/255 shift will read as a regression.
 
 ### Chosen path and the one fallback
 
-**Chosen: `Texture2DArray`.** Twelve images for a base-only pack, 66 once any override is used
+**Chosen: `Texture2DArray`.** Twelve images for a base-only pack, 72 once any override is used
 and no variants are declared (the unused slots hold the `missing` tile; variants add layers — see
 "Texture variants"), one sampler per size class (up to four), per-vertex `(layer, class)`, no UV rects, no atlas packing, no
 bleeding — a tile is a file.
 
 **Fallback: a single atlas image.** If array sampling ever fails on a target, the loader builds a
-4×4 atlas of the same twelve images — 9×9 when the 66 slots are in use — and the fragment shader
+4×4 atlas of the same twelve images — 9×9 when the 72 slots are in use — and the fragment shader
 maps `UV2.x` → cell rectangle (`cell = floor(vec2(mod(idx,G), floor(idx/G)))`), then samples with
-`UV/G + cell/G`, with `G = 4` for a base-only pack and `G = 9` for the 66-slot array. The mesher
+`UV/G + cell/G`, with `G = 4` for a base-only pack and `G = 9` for the 72-slot array. The mesher
 does not change — the index already travels in `UV2.x`. Only the loader's texture build and the
 fragment shader change. `repeat_disable` stays in the fallback too: at a tile's `u == 1.0` a
 repeat sampler would wrap into the neighbouring atlas cell.
@@ -595,7 +601,7 @@ the bundled pack, `--pack=texturepacks/default`. Restart to change packs — v1 
 6. **The procedural fallback is quantized** (±1/255), so it is not a zero-diff baseline.
 7. **No hot reload.** A pack change requires a restart.
 8. **Per-face overrides are all-or-nothing in VRAM.** A pack that provides even one override
-   carries at least the full 66-slot array — 5.5× the base art, more with variants — because the
+   carries at least the full 72-slot array — 6× the base art, more with variants — because the
    fixed override indices leave no room for a partial array.
 9. **The per-face UV basis was normalised in this build.** The v1 bases mirrored `posx` and
    `negz` in `u` and `bottom` in `v`; all six faces now satisfy `u × v = -n`, so those three
@@ -612,7 +618,7 @@ A `tiles` value is **either a string** — one pack-relative path, the v1 form �
 strings**: that key's **variants**, in manifest order. The first entry is the key's **primary**
 layer, the one the two-argument `TileIndex(Block, Face)` returns. The cap is **16 variants per
 key**; a longer array keeps only the first 16 (warning below). The rule applies uniformly to the
-twelve base keys and the 54 `<block>_<suffix>` override keys, and `version` stays `1`: a manifest
+twelve base keys and the 60 `<block>_<suffix>` override keys, and `version` stays `1`: a manifest
 with no arrays is unchanged.
 
 Schema row for `tiles` (see "pack.json"): a value is one pack-relative path or a list of them,
@@ -632,7 +638,7 @@ up to 16 variants, first = primary.
 
 ### The corrected layer invariant
 
-- **Key order is frozen** — the twelve base keys, then the 54 face cells, never reordered. Each
+- **Key order is frozen** — the twelve base keys, then the 60 face cells, never reordered. Each
   key contributes one **consecutive** layer per **declared** variant (capped at 16), in manifest
   order: a declared variant whose PNG is missing, undecodable or non-square keeps its slot and
   degrades to the `missing` image, so `stone = [ok, corrupt, ok]` allocates 3 layers with the
@@ -641,21 +647,21 @@ up to 16 variants, first = primary.
 - **A no-variant pack is byte-identical to the pre-variants build**: base key `k → layer k`,
   override cell `c → layer 12 + c`, same `Sources`, same table. `12 + cell` is the **no-variant
   baseline only**.
-- **`TexPack.LayerCount = 66` is the no-variant baseline slot space, not an array size.** The
+- **`TexPack.LayerCount = 72` is the no-variant baseline slot space, not an array size.** The
   real array count grows with variants: each key before a variant key shifts every later key by
   its extra slots. Once any key declares variants, "an override is always at layer `12 + cell`"
   is false — pack authors must not hard-code absolute layer numbers.
-- Hostile-pack ceiling: all 66 keys × 16 variants = **1056 layers**; at 16×16 RGBA8 (1 KiB per
-  layer) that is **≈ 1056 KiB** of texture memory, plus decode time.
+- Hostile-pack ceiling: all 72 keys × 16 variants = **1152 layers**; at 16×16 RGBA8 (1 KiB per
+  layer) that is **≈ 1152 KiB** of texture memory, plus decode time.
 
 Worked layer counts:
 
 | pack | keys | slots | layers |
 | --- | --- | --- | --- |
 | default (twelve single strings, no overrides) | 12 | 12 × 1 | **12** |
-| any pack with one override, no variants | 66 | 66 × 1 | **66** (today) |
+| any pack with one override, no variants | 72 | 72 × 1 | **72** (today) |
 | `variants-demo` (stone 4, dirt 3, ten singles, no overrides) | 12 | 4 + 3 + 10 × 1 | **17** |
-| hostile pack: all 66 keys × 16 variants | 66 | 66 × 16 | **1056** ceiling |
+| hostile pack: all 72 keys × 16 variants | 72 | 72 × 16 | **1152** ceiling |
 
 ### Selection rule
 
@@ -741,7 +747,7 @@ C, frozen key order still applies and each key contributes `max(1, validCount)` 
 layers. A key whose variants span classes has slots in several arrays; there is no single global
 layer number for it.
 
-`TexPack.LayerCount = KeyCount + FaceKeys.Length = 66` (`KeyCount` stays 12) remains the
+`TexPack.LayerCount = KeyCount + FaceKeys.Length = 72` (`KeyCount` stays 12) remains the
 **no-variant, no-class baseline slot space** anchor, and size classes do **not** change it. A
 class array's actual layer count travels in a different carrier — `Pack.Layers` / each class's own
 count — never in `LayerCount`. Every Phase 1 rule still holds in Phase 2: a pack whose every PNG
@@ -759,7 +765,7 @@ RGBA8 = 4 B/texel:
 | 64 | 16 KiB | 192 KiB | |
 | 256 | 256 KiB | 3 MiB | |
 | 1024 | 4 MiB | 48 MiB | |
-| 4096 | 64 MiB | **768 MiB** | 66-layer override layout = **4.125 GiB** — whole-pack 4096 is not realistic; only faces that need it should pay |
+| 4096 | 64 MiB | **768 MiB** | 72-layer override layout = **4.5 GiB** — whole-pack 4096 is not realistic; only faces that need it should pay |
 
 Not free: each class occupies its own `sampler2DArray` slot (four uniforms total) and adds the
 uniform branch that selects it. The win is that a pack pays per class, not for its largest tile

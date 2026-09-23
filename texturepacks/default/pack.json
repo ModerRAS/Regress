@@ -20,6 +20,12 @@
     "chest_top": "tiles/chest_top.png",
     "chest_bottom": "tiles/chest_bottom.png",
     "chest_posz": "tiles/chest_posz.png",
-    "chest_negz": "tiles/chest_negz.png"
+    "chest_negz": "tiles/chest_negz.png",
+    "pumpkin_posx": "tiles/pumpkin_posx.png",
+    "pumpkin_negx": "tiles/pumpkin_negx.png",
+    "pumpkin_top": "tiles/pumpkin_top.png",
+    "pumpkin_bottom": "tiles/pumpkin_bottom.png",
+    "pumpkin_posz": "tiles/pumpkin_posz.png",
+    "pumpkin_negz": "tiles/pumpkin_negz.png"
   }
 }
