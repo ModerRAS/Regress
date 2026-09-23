@@ -46,6 +46,9 @@ public static class Blocks
 
 	public static bool IsSolid(Block b) => b != Block.Air;
 
+	/// <summary>Wood-grade break time, shared by Wood and Heartwood: the append-only contract's intent is "heartwood is wood-grade", not a number. The x4 scale rebase moved Wood to 0.5f, so neither row may pin the pre-scale 2.0f.</summary>
+	private const float WoodHardness = 0.5f;
+
 	/// <summary>Seconds to break by hand. Negative is unbreakable. Indexed by (int)Block.
 	/// Voxels are 1/4 the old edge length, so every value is x0.25: the same seconds now dig
 	/// the same physical depth, at the cost of very fast single-voxel breaks (Leaves 0.05s is
@@ -57,13 +60,13 @@ public static class Blocks
 		0.125f, // Dirt
 		0.15f,  // Grass
 		0.125f, // Sand
-		0.5f,   // Wood
+		WoodHardness, // Wood
 		0.5f,   // Plank
 		0.05f,  // Leaves
 		-1f,    // Bedrock
 		0.5f,   // Chest
 		0.25f,  // Pumpkin
-		2.0f,  // Heartwood
+		WoodHardness, // Heartwood: wood-grade, derives from Wood
 	};
 
 	public static float HardnessOf(Block b) => Hardness[(int)b];
