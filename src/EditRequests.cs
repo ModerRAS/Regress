@@ -108,11 +108,52 @@ public static class BlockBehaviors
 		return snapped;
 	}
 
-	/// <summary>Bound on one fell: the largest tree the generator can stamp. Contains accepts
-	/// exactly the stamped volume, so this is a hard cap, not a margin. In production it is a
-	/// silent-truncation safety valve; correctness ("collected == the spec's volume") is owned by
-	/// the SelfTest assertions, never by this cap.</summary>
-	public static readonly int MaxBlocksPerBreak = TerrainGenerator.MaxTreeBlocks();
+	// ---- operation volume -------------------------------------------------
+
+	/// <summary>Edge of the default break/place volume, in cells: the 4-voxel old-block grid,
+	/// so the default operation is 4x4x4 = 64 cells. Fine mode is 1.</summary>
+	public const int OperationGrid = 4;
+	public const int OperationVolumeCells = OperationGrid * OperationGrid * OperationGrid;  // 64
+
+	/// <summary>Edge of the operation volume: 4 cells by default, 1 in fine mode.</summary>
+	public static int OperationExtent(WorldRules rules) => rules.FineMode ? 1 : OperationGrid;
+
+	/// <summary>The volume origin containing <paramref name="cell"/>: floor-divided to the 4-grid
+	/// (so negatives align) in coarse mode, the cell itself in fine mode. Idempotent.</summary>
+	public static Vector3I OperationAnchor(VoxelWorld world, Vector3I cell)
+	{
+		if (OperationExtent(world.Rules) == 1) return cell;
+		return new Vector3I(
+			VoxelWorld.FloorDiv(cell.X, OperationGrid) * OperationGrid,
+			VoxelWorld.FloorDiv(cell.Y, OperationGrid) * OperationGrid,
+			VoxelWorld.FloorDiv(cell.Z, OperationGrid) * OperationGrid);
+	}
+
+	/// <summary>Break time of one operation: the hardest breakable solid in the volume, so a
+	/// mixed volume costs what its slowest block costs. -1 when the hit cell is unbreakable:
+	/// the hit cell gates the operation, the volume only spreads it.</summary>
+	public static float OperationHardness(VoxelWorld world, Vector3I cell)
+	{
+		if (!Blocks.IsBreakable(world.GetBlock(cell.X, cell.Y, cell.Z))) return -1f;
+
+		var anchor = OperationAnchor(world, cell);
+		int extent = OperationExtent(world.Rules);
+		float hardest = 0f;
+		for (int dy = 0; dy < extent; dy++)
+			for (int dz = 0; dz < extent; dz++)
+				for (int dx = 0; dx < extent; dx++)
+				{
+					float h = Blocks.HardnessOf(world.GetBlock(anchor.X + dx, anchor.Y + dy, anchor.Z + dz));
+					if (h > hardest) hardest = h;
+				}
+		return hardest;
+	}
+
+	/// <summary>Bound on one break: the operation volume plus the largest tree the generator can
+	/// stamp. Contains accepts exactly the stamped volume, so the tree part is a hard cap, not a
+	/// margin. In production it is a silent-truncation safety valve; correctness ("collected ==
+	/// the spec's volume") is owned by the SelfTest assertions, never by this cap.</summary>
+	public static readonly int MaxBlocksPerBreak = TerrainGenerator.MaxTreeBlocks() + OperationVolumeCells;
 
 	/// <summary>Derived reach of one tree from any of its cells: MaxTreeHeight plus a margin.
 	/// The spec decides the fell now; this is only a safety recheck, never the decision.</summary>
@@ -121,12 +162,22 @@ public static class BlockBehaviors
 	// ponytail: reused scratch buffer, so the returned list is only valid until the next call.
 	[System.ThreadStatic] private static List<Vector3I> _found;
 
-	/// <summary>Blocks removed by breaking <paramref name="cell"/>.</summary>
+	/// <summary>Blocks removed by breaking <paramref name="cell"/>: the operation volume (64 cells
+	/// by default, 1 in fine mode) plus the fell set when the hit block is wood or leaves.
+	/// Duplicate-free; the fell decision stays the hit cell's.</summary>
 	public static List<Vector3I> Collect(VoxelWorld world, Block block, Vector3I cell)
 	{
-		var found = _found ??= new List<Vector3I>(64);
+		var found = _found ??= new List<Vector3I>(OperationVolumeCells);
 		found.Clear();
-		found.Add(cell);
+
+		// The volume first: every cell it covers is a candidate, breakable or not. ApplyBreak
+		// drops the unbreakable ones (Air, Bedrock), so this stays a pure geometry set.
+		var anchor = OperationAnchor(world, cell);
+		int extent = OperationExtent(world.Rules);
+		for (int dy = 0; dy < extent; dy++)
+			for (int dz = 0; dz < extent; dz++)
+				for (int dx = 0; dx < extent; dx++)
+					found.Add(new Vector3I(anchor.X + dx, anchor.Y + dy, anchor.Z + dz));
 
 		// Tree identity comes from the generator spec, never from the block type: a player's
 		// wood house is not a tree and breaks one cell at a time. Structures the world
@@ -139,7 +190,7 @@ public static class BlockBehaviors
 
 	/// <summary>Collect the generated tree that owns this cell, if any (see
 	/// <see cref="TerrainGenerator.TryGetTreeAt"/>): every spec cell that is currently Wood
-	/// or Leaves is collected. Cells no spec contains are left as a single break. A player
+	/// or Leaves is collected. Cells no spec contains are left as the operation volume alone. A player
 	/// block placed inside a tree's own volume is indistinguishable from a generated one and
 	/// falls with it; a per-tree ECS entity would be the upgrade path if trees ever need
 	/// their own state.</summary>
@@ -164,7 +215,9 @@ public static class BlockBehaviors
 
 					var b = world.GetBlock(x, y, z);
 					if (b != Block.Wood && b != Block.Leaves) continue;
-					found.Add(new Vector3I(x, y, z));
+					var c = new Vector3I(x, y, z);
+					if (found.Contains(c)) continue; // already in the operation volume
+					found.Add(c);
 					if (found.Count >= MaxBlocksPerBreak) return;
 				}
 			}

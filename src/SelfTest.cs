@@ -20,6 +20,14 @@ public static class SelfTest
 		_failures = 0;
 		GD.Print("Regress selftest");
 
+		// Deliberate premise: the whole selftest runs in fine mode, so it does NOT cover the
+		// coarse edit path. Every fixture below predates the operation volume and is written
+		// against single-voxel breaks/places; the coarse 64-voxel behaviour is verified by the
+		// tier-A `scenario volume` plus the pure checks in `---- operation volume ----`
+		// (alignment / hardest-block hardness). Do not "fix" a single-voxel assertion here.
+		world.Rules.FineMode = true;
+		Check(world.Rules.FineMode, "the selftest world is pinned to fine mode (legacy fixtures are single-voxel)");
+
 		// ---- terrain ----------------------------------------------------
 		Check(world.LoadedChunks > 0, $"spawn area generated ({world.LoadedChunks} chunks)");
 
@@ -291,6 +299,7 @@ public static class SelfTest
 		CheckSizeClasses(world);
 		CheckCollisionGate(world);
 		CheckSupportCollision(world);
+		CheckOperationVolume(world);
 
 		return _failures;
 	}
@@ -2970,6 +2979,43 @@ public static class SelfTest
 				for (int x = x0; x < x0 + VoxelWorld.SectionSize; x++)
 					if (blocks[ChunkBlocks.Index(x, y, z)] != (byte)Block.Air) return true;
 		return false;
+	}
+
+	/// <summary>
+	/// Pure checks for the operation volume: the mode default, anchor alignment and the
+	/// hardest-block time. The whole selftest runs in fine mode (see Run) as a deliberate
+	/// premise, so this section does NOT cover the coarse edit path; the coarse 64-voxel
+	/// behaviour is verified by the tier-A `scenario volume` plus the checks below.
+	/// </summary>
+	private static void CheckOperationVolume(VoxelWorld world)
+	{
+		GD.Print("  ---- operation volume ----");
+		// Fine premise (see Run): the coarse 64-voxel edit path is NOT covered here — the
+		// tier-A `scenario volume` owns it, plus the pure alignment and hardest-block checks below.
+
+		Check(!new WorldRules().FineMode, "a fresh WorldRules is coarse (4x4x4 default)");
+
+		world.Rules.FineMode = false;
+		Check(BlockBehaviors.OperationAnchor(world, new Vector3I(-1, 3, -5)) == new Vector3I(-4, 0, -8)
+			&& BlockBehaviors.OperationAnchor(world, new Vector3I(7, 4, 0)) == new Vector3I(4, 4, 0),
+			"a coarse anchor floors to the 4-voxel grid, negatives included");
+
+		// One 4-aligned volume of Dirt with one Stone in it, in a far-away scratch area. The hit
+		// cell is a Dirt cell, so a Dirt hit beside Stone must not cheapen the operation.
+		var anchor = BlockBehaviors.OperationAnchor(world, new Vector3I(60000, 4000, 60000));
+		for (int y = 0; y < BlockBehaviors.OperationGrid; y++)
+			for (int z = 0; z < BlockBehaviors.OperationGrid; z++)
+				for (int x = 0; x < BlockBehaviors.OperationGrid; x++)
+					world.SetBlock(anchor.X + x, anchor.Y + y, anchor.Z + z, Block.Dirt);
+		world.SetBlock(anchor.X + 1, anchor.Y + 1, anchor.Z + 1, Block.Stone);
+		float hardest = BlockBehaviors.OperationHardness(world, anchor);
+		Check(hardest == Blocks.HardnessOf(Block.Stone) && hardest > Blocks.HardnessOf(Block.Dirt),
+			$"a Dirt hit in a dirt+stone volume costs the hardest block ({hardest}s)");
+
+		world.Rules.FineMode = true;
+		Check(BlockBehaviors.OperationAnchor(world, new Vector3I(-1, 3, -5)) == new Vector3I(-1, 3, -5)
+			&& BlockBehaviors.OperationAnchor(world, new Vector3I(7, 4, 0)) == new Vector3I(7, 4, 0),
+			"a fine anchor is the hit cell");
 	}
 
 	private static void RunFrames(VoxelWorld world, int frames)

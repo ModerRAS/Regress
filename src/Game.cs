@@ -120,6 +120,10 @@ public partial class Game : Node3D
 		VoxelWorld.UseTiles(TexPack.Load(ArgValue("--pack=")));
 
 		World = new VoxelWorld { Name = "World", Focus = new Vector3(0.5f, 0, 0.5f) };
+		if (HasArg("--fine")) World.Rules.FineMode = true;
+		// The demo queues single shaft cells and counts breaks as one per cell (~layers*36),
+		// so pin the mode it was written for instead of changing its accounting.
+		if (HasArg("--demo")) World.Rules.FineMode = true;
 		if (int.TryParse(ArgValue("--view="), out int view)) World.ViewDistance = view;
 		if (int.TryParse(ArgValue("--collision="), out int collision)) World.CollisionRadius = collision;
 		if (int.TryParse(ArgValue("--budget="), out int budget)) World.ChunkWorkBudgetMs = budget;
@@ -165,6 +169,8 @@ public partial class Game : Node3D
 			AddChild(touch);
 			if (HasArg("--touchtest")) AddChild(new TouchTest(World, Player, touch));
 		}
+
+		if (HasArg("--volumetest") && Player != null) AddChild(new VolumeTest(World));
 
 		if (!_selfTest)
 		{
@@ -855,7 +861,7 @@ public partial class Game : Node3D
 	{
 		if (_hud == null || Player == null) return;
 		_hud.Text = $"Regress ({VoxelWorld.ChunkSize}^3 chunks, unbounded Y) — WASD move, Space jump, Shift sprint, F fly, LMB break, RMB place\n"
-			+ $"1-8 select block: {Blocks.NameOf(Player.Selected)}   R respawn   Esc release mouse"
+			+ $"1-8 select block: {Blocks.NameOf(Player.Selected)}   R respawn   V mode: {(World.Rules.FineMode ? "1x1x1 (fine)" : "4x4x4")}   Esc release mouse"
 			+ (BlockInteractions.Message == null ? "" : $"\nRMB use: {BlockInteractions.Message}");
 	}
 

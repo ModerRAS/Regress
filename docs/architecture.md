@@ -230,10 +230,37 @@ Gameplay never mutates the world; it proposes an edit and the world decides.
                      BlockBehaviors.Collect ──► the blocks actually removed ──► SetBlock
 ```
 
-- **`BlockBehaviors.Collect`** expands one request into the set of blocks it removes, bounded by
-  `MaxBlocksPerBreak` (derived from `TerrainGenerator.MaxTreeBlocks()`). Vein mining, leaf decay
-  and falling sand are the same hook. The rule belongs to the block, so every client of the
-  pipeline gets it.
+- **`BlockBehaviors.Collect`** expands one request into the set of blocks it removes: the
+  operation volume (below) plus the fell set when the hit block is a tree, bounded by
+  `MaxBlocksPerBreak` = `TerrainGenerator.MaxTreeBlocks() + OperationVolumeCells`. Vein mining,
+  leaf decay and falling sand are the same hook. The rule belongs to the block, so every client of
+  the pipeline gets it.
+- **The operation volume: one edit is a 4×4×4 block by default.** `BlockBehaviors.OperationGrid = 4`
+  is the pre-×4 block grid, so `OperationVolumeCells = 64`. A break or place applies to the
+  4-aligned volume containing the hit cell (`OperationAnchor`, floor-divided so negatives align),
+  which makes repeated operations tile the world exactly like the pre-×4 one-block grid did: the
+  ×4 rebase turned one old block into 4³ cells, and the operation volume turns those cells back
+  into one *operation*. Fine mode (`WorldRules.FineMode = true`) is 1 voxel. Placement mirrors the
+  break volume, and `PlacementGhost` anchors at the same `OperationAnchor` and shows the real
+  volume (`VolumeBounds`, extent³), so the preview is exactly what the click fills.
+- **`WorldRules.FineMode` is a per-world, host-authoritative switch.** v1 is single-player, so the
+  host owns the value (see [multiplayer.md](multiplayer.md) §6.5); it is reachable from the CLI
+  (`--fine`), the `V` key and the touch HUD's Fine button. Every consumer reads
+  `World.Rules.FineMode` — the switch is never copied into a second place.
+- **One operation, one edit: the time is the hardest block in the volume.** `OperationHardness`
+  takes the maximum `Blocks.HardnessOf` over the breakable solids in the volume, so a dirt volume
+  with one stone in it costs stone time wherever the crosshair lands, and `PlayerMining`
+  accumulates `delta / OperationHardness` into ONE progress bar and emits ONE request at 1.0. The
+  hit cell still gates the operation: an unbreakable hit (air, bedrock) returns −1 and is refused
+  before the volume is considered.
+- **The per-voxel hardness table did not change, and should not.** The ×4 rebase already scaled
+  every voxel hardness ×0.25 (see "The ×4 scale conversion rule"), so a hand mines the same
+  *physical* depth per second; what the rebase broke was the operation *count* — 64 cells per old
+  block. The operation volume restores the physical mining rate at the operation layer, not by
+  reintroducing a hardness constant; `Hardness` stays a per-voxel material property.
+- **Alignment is exact and never straddles a chunk border.** `OperationGrid = 4` divides both
+  `ChunkSize = 64` and `SectionSize = 16`, so a 4-aligned operation volume lies inside one chunk
+  and one 16³ section; no operation volume ever spans a chunk or section border.
 - **Tree identity comes from the generator spec, never from block type or connectivity.**
   `TerrainGenerator.TryGetTree(column, out TreeSpec)` is a pure function of the seed and the
   column, and `TreeSpec.Contains(x, y, z)` answers whether a cell belongs to that tree — zero
@@ -255,7 +282,8 @@ Gameplay never mutates the world; it proposes an edit and the world decides.
   origin. Trees are the first instance; boulders, ore veins and village houses follow the same
   shape.
 - **`Blocks.HardnessOf`** gives seconds to break by hand (negative = unbreakable). `PlayerMining`
-  accumulates `delta / hardness` on the crosshair block and only emits a request at 1.0.
+  accumulates `delta / OperationHardness(world, cell)` on the crosshair's operation volume and only
+  emits a request at 1.0.
 - **Placement legality lives in exactly one function**, `PlayerSystems.RequestPlaceAtCrosshair`,
   called by both the interactive and the scripted path: `RMB click -> Build -> interactable target? interact : RequestEdit(Place, ...)`.
 - Requests are applied before meshing in the same frame, so a multi-block break across chunk
@@ -321,7 +349,7 @@ still one request.
 | stone band | surface −3 | surface −12 | |
 | tree trunk | 1×1×6 | 4×4×24 | `TrunkHalfWidth = 2` |
 | tree height / canopy | +2 / radius 1–2 | +8 / radius 4,8 (dy −4..8) | `MaxTreeHeight = 32` |
-| tree block budget | 256 | 5578 | `TerrainGenerator.MaxTreeBlocks() * 2`, derived |
+| break budget | 256 | 2853 | `MaxBlocksPerBreak = MaxTreeBlocks() + OperationVolumeCells`, derived |
 | fell radius | 5 | 20 | |
 | player capsule | r 0.35 × 1.8 | r 2.0 × 8.0 | 4×4×8 cells |
 | player eye / body box | 1.62 / 0.7×1.9×0.7 | 6.48 / 2.8×7.6×2.8 at offset (1.4, 0.4, 1.4) | |
@@ -352,7 +380,9 @@ Block hardness was scaled ×0.25 — the inverse of the linear scale — so a ha
 *physical* depth per second: Stone 0.375 s, Dirt 0.125, Grass 0.15, Sand 0.125, Wood 0.5,
 Plank 0.5, Leaves 0.05, Chest 0.5, Pumpkin 0.25; Air and Bedrock are unbreakable (−1). Leaves at
 0.05 s is near-instant by design, not a bug: 1/4 the linear size makes a single block give way
-quicker, which is the accepted look of the finer granularity.
+quicker, which is the accepted look of the finer granularity. The physical mining rate is restored
+at the operation layer, not here: one break is a 4×4×4 operation by default (see "Block edits are
+a request pipeline"), so the per-voxel times stay as they are.
 
 The memory consequence: a 16³ chunk held two 4096-byte arrays (8 KB); a 64³ chunk holds two
 `ChunkSize³ = 262144`-byte arrays (512 KB) — 64× per chunk. That factor only becomes the whole

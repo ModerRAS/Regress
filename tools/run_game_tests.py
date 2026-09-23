@@ -59,6 +59,14 @@ SCENARIOS = [
         markers=["scenario touch: PASS"],
         exit=0,
     ),
+    # tier A: the operation volume — coarse 4x4x4 default vs --fine 1x1x1, plus the ghost volume.
+    dict(
+        name="volume",
+        tier="A",
+        argv=["--headless", "--path", ".", "--", "--volumetest", "--fine"],
+        markers=["scenario volume: PASS"],
+        exit=0,
+    ),
     # tier B: needs a real renderer; never wired into CI.
     dict(
         name="shot",

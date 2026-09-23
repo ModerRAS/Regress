@@ -23,6 +23,9 @@ public partial class VoxelWorld : Node3D, IBlockReader
 	/// different dimension; nothing about it is static.</summary>
 	public TerrainGenerator Terrain = new();
 
+	/// <summary>Per-world rule switches (host-authoritative in v1). Never null.</summary>
+	public WorldRules Rules { get; } = new();
+
 	public int SeaLevel => Terrain.SeaLevel;
 	public int BedrockY => Terrain.BedrockY;
 
@@ -564,12 +567,14 @@ public partial class VoxelWorld : Node3D, IBlockReader
 		var block = GetBlock(request.Cell.X, request.Cell.Y, request.Cell.Z);
 		if (!Blocks.IsBreakable(block)) return false;
 
-		// One break is not one block: the block type decides what it takes with it.
+		// One break is not one block: the block type decides what it takes with it, and the
+		// operation volume spreads the break. Air and Bedrock inside it are skipped, not removed.
 		var cells = BlockBehaviors.Collect(this, block, request.Cell);
 		bool removed = false;
 		for (int i = 0; i < cells.Count; i++)
 		{
 			var cell = cells[i];
+			if (!Blocks.IsBreakable(GetBlock(cell.X, cell.Y, cell.Z))) continue;
 			if (SetBlock(cell.X, cell.Y, cell.Z, Block.Air)) removed = true;
 		}
 		return removed;
@@ -577,9 +582,18 @@ public partial class VoxelWorld : Node3D, IBlockReader
 
 	private bool ApplyPlace(in EditRequest request)
 	{
-		var cell = request.Cell;
-		if (GetBlock(cell.X, cell.Y, cell.Z) != Block.Air) return false;
-		return SetBlock(cell.X, cell.Y, cell.Z, request.Block, request.Orientation);
+		var anchor = BlockBehaviors.OperationAnchor(this, request.Cell);
+		int extent = BlockBehaviors.OperationExtent(Rules);
+		bool placed = false;
+		for (int dy = 0; dy < extent; dy++)
+			for (int dz = 0; dz < extent; dz++)
+				for (int dx = 0; dx < extent; dx++)
+				{
+					int x = anchor.X + dx, y = anchor.Y + dy, z = anchor.Z + dz;
+					if (GetBlock(x, y, z) != Block.Air) continue; // never overwrite a non-air cell
+					if (SetBlock(x, y, z, request.Block, request.Orientation)) placed = true;
+				}
+		return placed;
 	}
 
 	public Entity CreateChunk(Vector3I key)

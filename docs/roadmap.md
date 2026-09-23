@@ -95,6 +95,21 @@ Carried from [architecture.md](architecture.md#known-weaknesses):
   world resets between sessions.
 - **App icon**: iOS currently uses a placeholder game tile and Android keeps the engine default launcher icon. Both need a real 1024×1024 icon from the user before release. A first-pass, repo-generated 1024×1024 icon now ships (`tools/gen_app_icon.py` → `assets/icon_1024x1024.png`, plus native 192×192 / 432×432 Android renders, wired into the iOS and Android presets) and remains user-replaceable.
 
+### 5. `WorldRules` settings UI
+
+`WorldRules` exists as a per-world, host-authoritative value (`FineMode`; CLI `--fine`, key `V`,
+touch Fine button). The missing piece is the persisted, in-game settings UI:
+
+- a settings panel that reads and writes `World.Rules` and survives a restart (persistence is
+  also a known weakness: player-built chunks reset between sessions today);
+- build it against `WorldRules` as a rule table, not a one-off Fine checkbox: the chain-fell
+  toggle next wave reuses the same plumbing;
+- the UI must read the replicated rule state from day one — per
+  [multiplayer.md](multiplayer.md) §6.5 the host owns `WorldRules` and clients render the
+  replicated value, never a local copy.
+
+Scope: small once a save file exists; the UI itself is a `Control` tree over one value per rule.
+
 ## Optional / user decides
 
 - **A visible player mesh (third person / arms).** This round specified the player body as

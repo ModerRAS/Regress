@@ -23,6 +23,7 @@ public partial class TouchControls : CanvasLayer
 	public Player Player;
 
 	private readonly Button[] _slots = new Button[Blocks.Palette.Length];
+	private Button _fine;
 
 	public static TouchGesture Classify(float elapsedMs, float movedPx) =>
 		movedPx > TapSlopPx ? TouchGesture.Look : (elapsedMs >= HoldMs ? TouchGesture.Hold : TouchGesture.Tap);
@@ -60,6 +61,14 @@ public partial class TouchControls : CanvasLayer
 		{
 			ref var state = ref Player.Self.GetComponent<PlayerState>();
 			state.Flying = pressed;
+		};
+
+		_fine = GridButton("Fine", "Fine", 2, 0);
+		_fine.ToggleMode = true;
+		_fine.Toggled += pressed =>
+		{
+			Player.World.Rules.FineMode = pressed;
+			GetNodeOrNull<Game>("/root/Main")?.RefreshHud();
 		};
 
 		var rotateNext = GridButton("RotateNext", "Q", 1, 1);
@@ -129,6 +138,7 @@ public partial class TouchControls : CanvasLayer
 		ref var state = ref Player.Self.GetComponent<PlayerState>();
 		for (int i = 0; i < _slots.Length; i++)
 			_slots[i].SetPressedNoSignal(Blocks.Palette[i] == state.Selected);
+		_fine.SetPressedNoSignal(Player.World.Rules.FineMode);
 	}
 }
 
